@@ -97,19 +97,17 @@ class Router(nn.Module):
 
         inp = torch.cat((enc_state, task_emb), 1)
 
-        h_t = torch.zeros(self.args.batch_size, self.args.hidden_size)
-        c_t = torch.zeros(self.args.batch_size, self.args.hidden_size)
+        h_t = torch.zeros(1, self.args.hidden_size)
+        c_t = torch.zeros(1, self.args.hidden_size)
         out_size = (self.args.img_size, self.args.img_size)
         
 
         builder = ModelBuilder(self.args)
 
-        layer_choices = []
         actions = []
         layer_mask = torch.zeros(self.num_layers+1)
         failed = False
         cur_loss = None
-        
         action_probs = []
 
         # Build the model architecture 
@@ -136,10 +134,9 @@ class Router(nn.Module):
                 continue
             
             # Verify did not choose a layer that has already been selected
-            assert layer_choice not in layer_choices
+            assert layer_mask[layer_choice] == 0
 
             # Add layer choice
-            layer_choices.append(layer_choice.numpy()[0])
             layer_mask[layer_choice] = 1
 
             cur_layer = self.layer_manager.get_layer((layer_choice-1).numpy()[0])
@@ -148,4 +145,7 @@ class Router(nn.Module):
                 failed = True
                 break
         
-        return failed, action_probs, actions, builder.build() 
+        if builder.cur_out_size != self.args.num_classes:
+            failed = True
+        
+        return failed, action_probs, actions, builder.build()

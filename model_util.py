@@ -22,8 +22,6 @@ def is_valid_mapping(prev_layer, cur_layer, out_size):
             return prev_layer.out_channels == cur_layer.in_channels
         elif isinstance(cur_layer, nn.Linear):
             # The output of the Conv layer must match linear
-            print("out_size", out_size)
-            print("cur_layer.in_features", cur_layer.in_features)
             return out_size == cur_layer.in_features
         else:
             # Conv layers must be followed Conv or a Linear layer
@@ -39,7 +37,6 @@ def is_valid_mapping(prev_layer, cur_layer, out_size):
         elif isinstance(cur_layer, nn.Softmax):
             return True
         else:
-            print("prev_layer", prev_layer, "cur_layer", cur_layer)
             raise Exception("Invalid layers.")
     elif isinstance(prev_layer, nn.Softmax):
         return cur_layer is None
