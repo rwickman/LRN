@@ -4,10 +4,9 @@ import os
 
 # TODO: Encode layers in config file
 class LayerManager:
-    def __init__(self, args, num_duplicates=2):
+    def __init__(self, args):
         self.args = args
         self._layer_dict = {}
-        self._num_duplicates = num_duplicates
         if self.args.load:
             self.load()
         else:
@@ -16,21 +15,21 @@ class LayerManager:
         # TODO: Load Layers
 
     def _init_layers(self):
-        for i in range(self._num_duplicates):
+        for i in range(self.args.num_dup_layers):
             # Input layer
             self._add_layer(nn.Conv2d(1, 32, 3, stride=1, padding=1))
 
-            # Intermediate layers
+            # Hidden layers
             self._add_layer(nn.Conv2d(32, 32, 3, stride=1, padding=1))
             self._add_layer(nn.Linear(self.args.img_size**2*32, 128))
             self._add_layer(nn.Linear(128, 128))
 
             # Add last layers
-            self._add_layer(nn.Linear(128, 10))
-            self._add_layer(nn.Linear(self.args.img_size**2*32, 10))
+            self._add_layer(nn.Linear(128, self.args.num_classes))
+            self._add_layer(nn.Linear(self.args.img_size**2*32, self.args.num_classes))
 
         # Add softmax for prediction
-        self._add_layer(nn.Softmax)
+        # self._add_layer(nn.Softmax)
 
     def save(self):
         """Save the layers."""
@@ -47,3 +46,6 @@ class LayerManager:
 
     def get_layer(self, idx):
         return self._layer_dict[idx]
+    
+    def get_num_layers(self):
+        return len(self._layer_dict)
