@@ -2,10 +2,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+import numpy as np
+from dataclasses import dataclass
+from typing import List
 
 from model_util import *
 from layer_manager import LayerManager
 from model_builder import ModelBuilder
+
+
+@dataclass
+class RouterResult:
+    failed: bool
+    action_probs: List[torch.Tensor]
+    actions: List[int]
+    model: nn.Sequential
 
 PASS_LAYER = 0
 
@@ -44,9 +55,11 @@ class StateEncoder(nn.Module):
         self.args = args
 
         self.conv1 = nn.Conv2d(self.args.in_channels, 32, 3, stride=1, padding=1)
-        self.bn1 = nn.GroupNorm(1, 32)
+        self.norm1 = nn.GroupNorm(1, 32)
         self.conv2 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
-        self.bn2 = nn.GroupNorm(1, 32)
+        self.norm2 = nn.GroupNorm(1, 32)
+        # self.conv3 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
+        # self.norm3 = nn.GroupNorm(1, 32)
         self.flatten = nn.Flatten()
         self.drop1 = nn.Dropout(self.args.drop_rate)
         
@@ -58,14 +71,13 @@ class StateEncoder(nn.Module):
         self.fc1 = nn.Linear(num_units, self.args.state_size)
 
     def forward(self, state):
-        state = F.relu(self.bn1(self.conv1(state)))
-        state = F.relu(self.bn2(self.conv2(state)))
+        state = F.relu(self.norm1(self.conv1(state)))
+        state = F.relu(self.norm2(self.conv2(state)))
+        #state = F.relu(self.norm3(self.conv3(state)))
         state = self.flatten(state)
         state = self.drop1(state)
         return self.fc1(state)
 
-
-# Should you keep inputing state and task emb or not...?
 
 class Router(nn.Module):
     def __init__(self, args, num_tasks):
@@ -82,6 +94,7 @@ class Router(nn.Module):
         self.state_encoder = StateEncoder(self.args)
         
         self.router_cell = nn.LSTMCell(self.args.state_size + self.args.task_emb_size, self.args.hidden_size)
+        #self.critic_cell = nn.LSTMCell(self.args.state_size + self.args.task_emb_size, self.args.hidden_size)
         self.att = Attention(self.args)
         
 
@@ -93,26 +106,26 @@ class Router(nn.Module):
         task_emb = self.task_embs(task_id)
 
         # Get layer embeddings
-        layer_embs = self.layer_embs(torch.arange(self.num_layers+1)).unsqueeze(0)
+        layer_embs = self.layer_embs(torch.arange(self.num_layers+1).cuda()).unsqueeze(0)
 
         inp = torch.cat((enc_state, task_emb), 1)
 
-        h_t = torch.zeros(1, self.args.hidden_size)
-        c_t = torch.zeros(1, self.args.hidden_size)
-        out_size = (self.args.img_size, self.args.img_size)
-        
+        h_t = torch.zeros(1, self.args.hidden_size).cuda()
+        c_t = torch.zeros(1, self.args.hidden_size).cuda()
 
         builder = ModelBuilder(self.args)
 
         actions = []
-        layer_mask = torch.zeros(self.num_layers+1)
+        layer_mask = torch.zeros(self.num_layers+1).cuda()
         failed = False
         cur_loss = None
         action_probs = []
+        added_layers = []
 
         # Build the model architecture 
         for i in range(self.args.max_depth):
             # hidden state, cell memory
+
             h_t, c_t = self.router_cell(inp, (h_t, c_t))
 
             # Get attention distribution over layers
@@ -126,8 +139,8 @@ class Router(nn.Module):
                 layer_distr = Categorical(layer_probs)
                 layer_choice = layer_distr.sample()
             
-            actions.append(layer_choice.numpy()[0])
-            action_probs.append(layer_distr.log_prob(layer_choice))
+            actions.append(layer_choice.cpu().numpy()[0])
+            action_probs.append(layer_probs)
 
             # If choice is to PASS, then skip current step
             if layer_choice == PASS_LAYER:
@@ -139,13 +152,14 @@ class Router(nn.Module):
             # Add layer choice
             layer_mask[layer_choice] = 1
 
-            cur_layer = self.layer_manager.get_layer((layer_choice-1).numpy()[0])
+            cur_layer = self.layer_manager.get_layer((layer_choice-1).cpu().numpy()[0])
             if not builder.attempt_add_layer(cur_layer):
                 # layer was not successfully added
                 failed = True
                 break
+            added_layers.append(cur_layer)    
         
-        if builder.cur_out_size != self.args.num_classes:
+        if builder.cur_out_size != self.args.num_classes or builder.get_prev_layer() is None:
             failed = True
         
-        return failed, action_probs, actions, builder.build()
+        return RouterResult(failed, action_probs, actions, builder.build()), added_layers
