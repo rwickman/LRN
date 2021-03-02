@@ -32,8 +32,10 @@ if __name__ == "__main__":
         help="Dropout rate for state encoder .")
     parser.add_argument("--num_dup_layers", type=int, default=2,
         help="Number of duplicate layers .")
-    parser.add_argument("--num_classes", type=int, default=10,
+    parser.add_argument("--num_classes", type=int, default=1,
         help="Number classes of output.")
     parser.add_argument("--gamma", type=float, default=0.99,
+        help="Number classes of output.")
+    parser.add_argument("--entropy_lam", type=float, default=0.001,
         help="Number classes of output.")
     main(parser.parse_args())

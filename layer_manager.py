@@ -12,12 +12,11 @@ class LayerManager:
         else:
             self._init_layers()
 
-        # TODO: Load Layers
 
     def _init_layers(self):
         for i in range(self.args.num_dup_layers):
             # Input layer
-            self._add_layer(nn.Conv2d(1, 32, 3, stride=1, padding=1))
+            self._add_layer(nn.Conv2d(self.args.in_channels, 32, 3, stride=1, padding=1))
 
             # Hidden layers
             self._add_layer(nn.Conv2d(32, 32, 3, stride=1, padding=1))
