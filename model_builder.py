@@ -7,12 +7,8 @@ class ModelBuilder:
         self.args = args
         self._layers = []
         self._update_out_size()
-        
 
     def attempt_add_layer(self, cur_layer):
-        # TODO: Add flatten layer if prev layer is Conv and cur_layer is linear
-        #prev_layer = get_prev_layer() 
-        #if get_prev_layer
         prev_layer = self.get_prev_layer()
         if is_valid_mapping(prev_layer, cur_layer, self.cur_out_size):
             if isinstance(prev_layer, nn.Conv2d) and isinstance(cur_layer, nn.Linear):
@@ -52,13 +48,14 @@ class ModelBuilder:
 
     def build(self):
         """Build a model out of the layers."""
+        # TODO: Don't add ReLU if using Flatten layer
         model_arch = []
         for i, layer in enumerate(self._layers):
             model_arch.append(layer)
             # Add ReLU after each layer, except for last layer
-            if i + 1 < len(self._layers):
+            if i + 1 < len(self._layers) and not isinstance(layer, nn.Flatten):
                 model_arch.append(nn.ReLU())
-            
-        return nn.Sequential(*model_arch)
+        #model_arch.append(nn.Softmax())
+        return nn.Sequential(*model_arch).cuda()
 
         
