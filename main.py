@@ -38,4 +38,8 @@ if __name__ == "__main__":
         help="Number classes of output.")
     parser.add_argument("--entropy_lam", type=float, default=0.001,
         help="Number classes of output.")
+    parser.add_argument("--critic_lam", type=float, default=1.0,
+        help="Number classes of output.")
+    parser.add_argument("--train_iter", type=int, default=10000,
+        help="Number of training router iterations.")
     main(parser.parse_args())

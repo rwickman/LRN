@@ -34,11 +34,11 @@ class LayerManager:
         """Save the layers."""
         torch.save(
             self._layer_dict, 
-            os.path.join(self.args.save_dir, "layer_modules"))
+            os.path.join(self.args.save_dir, "layer_modules.pt"))
     
     def load(self):
         self._layer_dict = torch.load(
-            os.path.join(self.args.save_dir, "layer_modules"))
+            os.path.join(self.args.save_dir, "layer_modules.pt"))
 
     def _add_layer(self, layer):
         self._layer_dict[len(self._layer_dict)] = layer
