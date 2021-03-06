@@ -16,6 +16,8 @@ class RouterResult:
     failed: bool
     action_probs: List[torch.Tensor]
     actions: List[int]
+    # The index in the action probability that corresponds to the action (i.e., layer)
+    action_indices: List[int]
     model: nn.Sequential
     critic_outputs: List[torch.Tensor]
 
@@ -48,7 +50,7 @@ class Attention(nn.Module):
         u_i = u_i / torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
 
         # Predictions over layers
-        layer_probs = F.softmax(u_i.masked_fill(layer_mask==1, float('-inf')), dim=1)
+        layer_probs = F.softmax(u_i, dim=1)
         return layer_probs 
 
 class StateEncoder(nn.Module):
@@ -123,7 +125,8 @@ class Router(nn.Module):
         task_emb = self.task_embs(task_id)
 
         # Get layer embeddings
-        layer_embs = self.layer_embs(torch.arange(self.num_layers+1).cuda()).unsqueeze(0)
+        layer_emb_indices = list(range(self.num_layers+1))
+        #layer_embs = self.layer_embs(torch.arange(self.num_layers+1).cuda()).unsqueeze(0)
 
         h_t_router = torch.zeros(1, self.args.hidden_size).cuda()
         c_t_router = torch.zeros(1, self.args.hidden_size).cuda()
@@ -136,21 +139,18 @@ class Router(nn.Module):
         builder = ModelBuilder(self.args)
 
         actions = []
+        action_indices = []
         layer_mask = torch.zeros(self.num_layers+1).cuda()
         failed = False
         cur_loss = None
         action_probs = []
-        added_layers = []
-        # print("enc_state", enc_state)
-        # print("task_emb", task_emb)
+
         # Build the model architecture 
         for i in range(self.args.max_depth):
-            # Update input
-            
-            # print("task_emb", task_emb)
-            #enc_state = self.state_encoder(state)
+            # Update inputs
             inp = torch.cat((enc_state, task_emb, layer_emb_choice), 1)
-
+            layer_embs = self.layer_embs(torch.tensor(layer_emb_indices).cuda())
+            
             # Router  hidden state, cell memory
             h_t_router, c_t_router = self.router_cell(inp, (h_t_router, c_t_router))
 
@@ -171,35 +171,40 @@ class Router(nn.Module):
                 # else:
                 # Sample a layer
                 layer_distr = Categorical(layer_probs)
-                layer_choice = layer_distr.sample()
+                layer_sample = layer_distr.sample()
+                layer_choice = layer_emb_indices[layer_sample]
             
-            actions.append(layer_choice.cpu().numpy()[0])
+            # Each action needs to be associated with its index in the layer_probs
+            actions.append(layer_choice)
+            action_indices.append(layer_sample)
             action_probs.append(layer_probs)
 
             # Update layer input embedding choice for next input
-            layer_emb_choice = self.layer_embs(layer_choice)
-            
+            layer_emb_choice = self.layer_embs(torch.tensor([layer_choice]).cuda())
+
             # If choice is to PASS, then skip current step
             if layer_choice == PASS_LAYER:
                 continue
             
             # Verify did not choose a layer that has already been selected
-            assert layer_mask[layer_choice] == 0
+            assert layer_choice in layer_emb_indices
 
             # Add layer choice
-            layer_mask[layer_choice] = 1
+            #layer_mask[layer_choice] = 1
 
-            cur_layer = self.layer_manager.get_layer((layer_choice-1).cpu().numpy()[0])
+            # Remove the layer choice
+            layer_emb_indices.remove(layer_choice)
+
+            cur_layer = self.layer_manager.get_layer(layer_choice-1)
             if not builder.attempt_add_layer(cur_layer):
                 # layer was not successfully added
                 failed = True
-                break
-            added_layers.append(cur_layer)    
+                break 
         
         if builder.cur_out_size != self.args.num_classes or builder.get_prev_layer() is None:
             failed = True
         
-        return RouterResult(failed, action_probs, actions, builder.build(), critic_outputs), added_layers 
+        return RouterResult(failed, action_probs, actions, action_indices, builder.build(), critic_outputs) 
     
     def save_layers(self):
         self.layer_manager.save()

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from router import Router
 
 
-with open("util/mnist-mtl_full.npy", 'rb') as f:
+with open("util/mnist-mtl.npy", 'rb') as f:
   fsz = os.fstat(f.fileno()).st_size
   print(fsz)
   train_out = np.load(f, allow_pickle=True)
@@ -26,42 +26,37 @@ class Trainer:
         self.args = args
         self._router = Router(args, 10).cuda()
         #print(self._router.parameters())
-        self.optimizer = optim.Adam(self._router.parameters(), lr=1e-4)#, betas=(0.5, 0.59))
-        self.avg_adv = torch.zeros(self.args.max_depth).cuda()
+        self.optimizer = optim.RMSprop(self._router.parameters(), lr=2e-4)#, betas=(0.5, 0.59))
+        self.adv_avg = torch.zeros(2, self.args.max_depth).cuda()
+        self.adv_std = torch.ones(2, self.args.max_depth).cuda()
+
         self._layer_count = {}
         if self.args.load:
             self.load()
         
     def train(self):
-        # TODO: Need to force last layer to have 10 outputs
         total_loss = None
         critic_losses = []
         model_bce_losses = []
         for i in range(self.args.train_iter):
             #print(examples[0][i%self.args.batch_size:i%self.args.batch_size+1].shape)
             task = torch.tensor([train_out[i % len(train_out)][0]]).cuda()
-            # if i > 2000 and train_out[i % len(train_out)][0] not in [0,1]:
-            #     continue
+            if train_out[i % len(train_out)][0] not in [0,1]:
+                continue
             #plt.imshow(train_out[i % len(train_out)][1][0].transpose(1,2,0))
             #plt.show()
             img = torch.tensor(train_out[i % len(train_out)][1]).cuda()
             target = torch.tensor(train_out[i % len(train_out)][2], dtype=torch.float32).unsqueeze(0).cuda()
             
 
-            router_result, added_layers = self._router(img, task)
+            router_result = self._router(img, task)
             action_probs, actions, model, critic_outputs = router_result.action_probs, router_result.actions, router_result.model, router_result.critic_outputs  
             
             rewards = torch.zeros_like(torch.tensor(actions), dtype=torch.float64).cuda()
-            #print("BEFORE", rewards)
-            # if len(added_layers) > 0:
-            #     rewards[:len(added_layers)] += self.layer_reward_bonus(added_layers)
-            #print("AFTER", rewards)
-            #rewards = (torch.tensor(actions) != 0) * 0.1
-            #rewards = rewards + (torch.tensor(actions) == 0) * -0.1
-            if len(added_layers) > 0:
-                bonus_mask = torch.tensor(actions)!=0
+            if len(actions) > 0:
+                bonus_mask = torch.tensor(actions) != 0
                 bonus_mask[-1] = not router_result.failed
-                rewards[bonus_mask] += self.layer_reward_bonus(added_layers, bonus_mask)
+                rewards[bonus_mask] += self.layer_reward_bonus(actions, bonus_mask)
             
             if router_result.failed:
                 rewards[-1] = -2
@@ -72,7 +67,6 @@ class Trainer:
                         action_sets[action_task_pair] = 0
                     action_sets[action_task_pair] +=1
                 model_optim = optim.SGD(model.parameters(), lr=1e-4)
-                #print(model)
                 pred = model(img)
                 loss = bce_loss_fn(pred[0], target)
                 model_bce_losses.append(loss.detach().cpu().numpy())
@@ -92,12 +86,23 @@ class Trainer:
 
             for t in range(len(action_probs)):
                 adv = returns[t] - critic_outputs[t][0]
-                self.avg_adv[t] = 0.95 * self.avg_adv[t]  + 0.05 * returns[t]
-                advantage[t] = adv
                 critic_loss = torch.square(adv) * (1/len(critic_outputs)) * self.args.critic_lam 
                 loss += critic_loss
                 total_critic_loss += critic_loss.detach().cpu().numpy()
-                loss += -torch.log(action_probs[t][0][actions[t]]) * adv.detach()#(returns[t] - self.avg_adv[t])
+
+                # if not router_result.failed:
+                #     adv = adv.detach() - self.adv_avg[int(router_result.failed), t]
+                # else:
+                #     adv = adv.detach()
+                #loss += -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv.detach()
+                
+                delta = adv.detach() - self.adv_avg[int(router_result.failed), t] 
+                adv = (delta) / self.adv_std[int(router_result.failed), t]**0.5
+                adv = max(min(3.0, adv), -3.0)
+                loss += -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv
+                self.adv_std[int(router_result.failed), t] = (1-self.args.adv_alpha) * (self.adv_std[int(router_result.failed), t] + self.args.adv_alpha * delta**2) 
+                self.adv_avg[int(router_result.failed), t] = self.adv_avg[int(router_result.failed), t] + self.args.adv_alpha * delta 
+                advantage[t] = adv
                 # if not router_result.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
                 #     loss += action_probs[t][0][actions[t]] * 10
 
@@ -117,7 +122,7 @@ class Trainer:
             # print("loss", loss)
             # print("total_loss", total_loss)
 
-            if (i + 1) % self.args.batch_size == 0:
+            if (i + 1) % (self.args.batch_size * 4) == 0:
                 #print(self._router.state_encoder.fc1.weight.grad)
                 # print("self._router.state_encoder.fc1.weight.grad.max()", self._router.state_encoder.fc1.weight.grad.max())
                 # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
@@ -132,11 +137,17 @@ class Trainer:
                 total_loss = None
                 
                 self.optimizer.zero_grad()
-            if not router_result.failed:
-                print("task", task, " target", target)
+            if len(action_probs) > 1 and i % (self.args.batch_size * 3) == 0:
+                print("\ntask", task, " target", target)
                 print("action_probs[0]", action_probs[0])
+                print("action_probs[1]", action_probs[1])
+                if len(action_probs) > 2:
+                    print("action_probs[2]", action_probs[2])
                 print("Critic Outputs", torch.tensor(critic_outputs).cpu().numpy(), "VS", returns.cpu().numpy(), advantage.detach().cpu().numpy())
-                print(router_result.failed, model, actions)
+                # print("Avg ADV", self.adv_avg)
+                # print("STD ADV", self.adv_std)
+
+                print(router_result.failed, model, actions, "\n")
         for pair in sorted(list(action_sets.items()), key=lambda a: a[1]):
             print(pair)
         
@@ -156,23 +167,26 @@ class Trainer:
 
         return returns
 
-    def layer_reward_bonus(self, added_layers, bonus_mask):
+    def layer_reward_bonus(self, actions, bonus_mask):
         bonus = torch.zeros(torch.sum(bonus_mask)).cuda()
         b_i = 0
-        for i in range(len(added_layers)):
+        for i in range(len(bonus)):
             if bool(bonus_mask[i]):
-                if added_layers[i] not in self._layer_count:
-                    self._layer_count[added_layers[i]] = 1
-                bonus[b_i] += (1 / np.log(self._layer_count[added_layers[i]] + 1))
+                if actions[i] not in self._layer_count:
+                    self._layer_count[actions[i]] = 1
+                bonus[b_i] += (1 / np.log(self._layer_count[actions[i]] + 1))
+                
+                #bonus[b_i] += 1 / self._layer_count[added_layers[i]]
                 b_i += 1
-                #bonus[i] += 1 / self._layer_count[added_layers[i]]
-                self._layer_count[added_layers[i]] += 1
+                self._layer_count[actions[i]] += 1
         return bonus
     
     def save(self):
         model_dict = {
             "router" : self._router.state_dict(),
-            "optimizer" : self.optimizer.state_dict()
+            "optimizer" : self.optimizer.state_dict(),
+            "adv_avg" : self.adv_avg,
+            "adv_std" : self.adv_std
         }
         torch.save(model_dict, os.path.join(self.args.save_dir, "router.pt"))
         self._router.save_layers()
@@ -182,4 +196,6 @@ class Trainer:
         model_dict = torch.load(os.path.join(self.args.save_dir, "router.pt"))
         self._router.load_state_dict(model_dict["router"])
         self.optimizer.load_state_dict(model_dict["optimizer"])
+        self.adv_avg = model_dict["adv_avg"]
+        self.adv_std = model_dict["adv_std"] 
         self._router.load_layers()
