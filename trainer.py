@@ -26,9 +26,10 @@ class Trainer:
         self.args = args
         self._router = Router(args, 10).cuda()
         #print(self._router.parameters())
-        self.optimizer = optim.RMSprop(self._router.parameters(), lr=2e-4)#, betas=(0.5, 0.59))
-        self.adv_avg = torch.zeros(2, self.args.max_depth).cuda()
-        self.adv_std = torch.ones(2, self.args.max_depth).cuda()
+        self.optimizer = optim.Adam(self._router.parameters(), lr=1e-4)#, betas=(0.5, 0.59))
+        self.adv_avg = torch.zeros(self.args.max_depth).cuda()
+        self.adv_std = torch.ones(self.args.max_depth).cuda()
+        self.critic_loss_fn = nn.SmoothL1Loss()
 
         self._layer_count = {}
         if self.args.load:
@@ -59,7 +60,7 @@ class Trainer:
                 rewards[bonus_mask] += self.layer_reward_bonus(actions, bonus_mask)
             
             if router_result.failed:
-                rewards[-1] = -2
+                rewards[-1] = -4
             else:
                 if i > 5000:
                     action_task_pair = ((task.cpu().numpy()[0], target.cpu().numpy()[0]), tuple(actions)) 
@@ -70,7 +71,7 @@ class Trainer:
                 pred = model(img)
                 loss = bce_loss_fn(pred[0], target)
                 model_bce_losses.append(loss.detach().cpu().numpy())
-                #print("MODEL LOSS: ", loss)
+                print("MODEL LOSS: ", loss)
 
                 loss.backward()
                 model_optim.step()
@@ -86,22 +87,18 @@ class Trainer:
 
             for t in range(len(action_probs)):
                 adv = returns[t] - critic_outputs[t][0]
-                critic_loss = torch.square(adv) * (1/len(critic_outputs)) * self.args.critic_lam 
+                critic_loss = self.critic_loss_fn(critic_outputs[t][0], returns[t])#torch.square(adv) * (1/len(critic_outputs)) * self.args.critic_lam 
                 loss += critic_loss
                 total_critic_loss += critic_loss.detach().cpu().numpy()
 
-                # if not router_result.failed:
-                #     adv = adv.detach() - self.adv_avg[int(router_result.failed), t]
-                # else:
-                #     adv = adv.detach()
                 #loss += -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv.detach()
                 
-                delta = adv.detach() - self.adv_avg[int(router_result.failed), t] 
-                adv = (delta) / self.adv_std[int(router_result.failed), t]**0.5
+                delta = adv.detach() - self.adv_avg[t] 
+                adv = (delta) / self.adv_std[t]**0.5
                 adv = max(min(3.0, adv), -3.0)
                 loss += -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv
-                self.adv_std[int(router_result.failed), t] = (1-self.args.adv_alpha) * (self.adv_std[int(router_result.failed), t] + self.args.adv_alpha * delta**2) 
-                self.adv_avg[int(router_result.failed), t] = self.adv_avg[int(router_result.failed), t] + self.args.adv_alpha * delta 
+                self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
+                self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
                 advantage[t] = adv
                 # if not router_result.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
                 #     loss += action_probs[t][0][actions[t]] * 10
@@ -122,11 +119,13 @@ class Trainer:
             # print("loss", loss)
             # print("total_loss", total_loss)
 
-            if (i + 1) % (self.args.batch_size * 4) == 0:
+            if (i + 1) % (self.args.batch_size * 2) == 0:
                 #print(self._router.state_encoder.fc1.weight.grad)
                 # print("self._router.state_encoder.fc1.weight.grad.max()", self._router.state_encoder.fc1.weight.grad.max())
                 # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
                 # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
+                #print("self._router.att.state_W.weight.grad.max()", self._router.att.state_W.weight.grad.max())
+                #print("self._router.att.state_W.weight.grad.max()", self._router.att.W_v.weight.grad.max())
                 # print("self._router.task_embs.weight.grad", self._router.task_embs.weight.grad)
 
                 #torch.nn.utils.clip_grad_norm_(self._router.parameters(), 1.0)
@@ -137,10 +136,11 @@ class Trainer:
                 total_loss = None
                 
                 self.optimizer.zero_grad()
-            if len(action_probs) > 1 and i % (self.args.batch_size * 3) == 0:
+            if i % (self.args.batch_size * 3) == 0:
                 print("\ntask", task, " target", target)
                 print("action_probs[0]", action_probs[0])
-                print("action_probs[1]", action_probs[1])
+                if len(action_probs) > 1:
+                    print("action_probs[1]", action_probs[1])
                 if len(action_probs) > 2:
                     print("action_probs[2]", action_probs[2])
                 print("Critic Outputs", torch.tensor(critic_outputs).cpu().numpy(), "VS", returns.cpu().numpy(), advantage.detach().cpu().numpy())
@@ -158,7 +158,7 @@ class Trainer:
         self.save()
     
     def compute_return(self, rewards, action_probs):
-        returns = torch.zeros_like(rewards).cuda()
+        returns = torch.zeros_like(rewards, dtype=torch.float32).cuda()
         for t in reversed(range(len(rewards))):
             if t + 1 < len(rewards):
                 returns[t] = rewards[t] + self.args.gamma * returns[t+1]
@@ -174,9 +174,9 @@ class Trainer:
             if bool(bonus_mask[i]):
                 if actions[i] not in self._layer_count:
                     self._layer_count[actions[i]] = 1
-                bonus[b_i] += (1 / np.log(self._layer_count[actions[i]] + 1))
+                #bonus[b_i] += (1 / np.log(self._layer_count[actions[i]] + 1))
                 
-                #bonus[b_i] += 1 / self._layer_count[added_layers[i]]
+                bonus[b_i] += 0#1 / self._layer_count[actions[i]]
                 b_i += 1
                 self._layer_count[actions[i]] += 1
         return bonus

@@ -44,4 +44,6 @@ if __name__ == "__main__":
         help="Number of training router iterations.")
     parser.add_argument("--adv_alpha", type=float, default=0.01,
         help="Number of training router iterations.")
+    parser.add_argument("--num_heads", type=int, default=4,
+        help="Number of training router iterations.")
     main(parser.parse_args())

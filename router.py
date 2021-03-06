@@ -23,6 +23,46 @@ class RouterResult:
 
 PASS_LAYER = 0
 
+class MultiheadAttention(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.depth = self.args.hidden_size // self.args.num_heads
+
+        self.W_q = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.W_k = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.W_v = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+
+        # W for multi-head attention
+        self.mha_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+
+    def split_heads(self, x):
+        x = torch.reshape(x, (1, -1, self.args.num_heads, self.depth))
+        return x.transpose(2,1)
+
+    def forward(self, x):
+        q = self.split_heads(self.W_q(x))
+        k = self.split_heads(self.W_k(x))
+        v = self.split_heads(self.W_v(x))
+
+        #print(q.shape)
+        qk = torch.matmul(q, k.transpose(3,2))
+
+        dk = torch.tensor(q.shape[-1], dtype=torch.float32)
+        att_weights = F.softmax(qk / torch.sqrt(dk), dim=1)
+        scaled_att = torch.matmul(att_weights, v)
+
+        # (batch_size, layers+hidden+enc_state, num_heads, depth)
+        scaled_att = scaled_att.transpose(2,1)
+        
+        # Squeeze MHA together for each embedding
+        scaled_att = torch.reshape(scaled_att, (1, -1, self.args.hidden_size))
+
+        # Combine the MHA for each embedding
+        out = self.mha_W(scaled_att).squeeze(0)
+
+        return out
+
 class Attention(nn.Module):
     def __init__(self, args):
         super().__init__()
@@ -31,20 +71,51 @@ class Attention(nn.Module):
         # W for hidden state
         self.hidden_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
         
+        # W for encoded state
+        self.state_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+
         # W for layer embeddings
         self.layer_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
         self.V = nn.Linear(self.args.hidden_size, 1)
+
+        self.mha = MultiheadAttention(args)
+
+        self.point_wise_linear1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.point_wise_linear2 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
         
-    def forward(self, layer_embs, hidden_state, layer_mask):
+        self.dropout1 = nn.Dropout(self.args.drop_rate)
+        self.dropout2 = nn.Dropout(self.args.drop_rate)
+
+        self.norm1 = nn.GroupNorm(1, self.args.hidden_size)
+        self.norm2 = nn.GroupNorm(1, self.args.hidden_size)
+
+        
+    def forward(self, layer_embs, hidden_state, layer_mask, enc_state):
+        inp = torch.cat((layer_embs, hidden_state, enc_state))
+
+        
+        mha_out = self.mha(inp)
+        mha_out = self.dropout1(mha_out)
+        mha_out  = self.norm1(mha_out + inp)
+        
+        pw_out = self.point_wise_linear1(mha_out)
+        pw_out = self.point_wise_linear2(pw_out)
+        pw_out = self.dropout2(pw_out)
+        out = self.norm2(pw_out + mha_out)
+
+
         # (batch_size, num_layers, hidden_size)
-        layer_trans = self.layer_W(layer_embs)
-
+        layer_trans = self.layer_W(out[:-2])
+        #print("layer_trans.shape", layer_trans.shape)
         # (batch_size, 1, hidden_size)
-        hidden_trans = self.hidden_W(hidden_state).unsqueeze(1)
-
+        hidden_trans = self.hidden_W(out[-2].unsqueeze(0)).unsqueeze(1)
+        #print("hidden_trans.shape", hidden_trans.shape)
+        
+        state_trans = self.state_W(out[-1].unsqueeze(0)).unsqueeze(1)
+        
         # (batch_size, num_layers)
-        u_i = self.V(F.tanh(layer_trans + hidden_trans)).squeeze(-1)
+        u_i = self.V(torch.tanh(layer_trans + hidden_trans + state_trans)).squeeze(-1)
     
         # Scale the output
         u_i = u_i / torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
@@ -160,7 +231,7 @@ class Router(nn.Module):
             critic_outputs.append(v_t)
             
             # Get attention distribution over layers
-            layer_probs = self.att(layer_embs, h_t_router, layer_mask)
+            layer_probs = self.att(layer_embs, h_t_router, layer_mask, enc_state)
 
             # Choose a layers
             if argmax:
