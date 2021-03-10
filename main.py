@@ -30,16 +30,18 @@ if __name__ == "__main__":
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.2,
         help="Dropout rate for state encoder .")
-    parser.add_argument("--num_dup_layers", type=int, default=2,
+    parser.add_argument("--num_dup_layers", type=int, default=4,
         help="Number of duplicate layers .")
     parser.add_argument("--num_classes", type=int, default=1,
         help="Number classes of output.")
     parser.add_argument("--gamma", type=float, default=0.99,
-        help="Number classes of output.")
+        help="Reward decay.")
+    parser.add_argument("--gae_lam", type=float, default=0.95,
+        help="GAE lambda.")
     parser.add_argument("--entropy_lam", type=float, default=0.001,
-        help="Number classes of output.")
+        help="Entropy lambda.")
     parser.add_argument("--critic_lam", type=float, default=1.0,
-        help="Number classes of output.")
+        help="Critic lambda.")
     parser.add_argument("--train_iter", type=int, default=10000,
         help="Number of training router iterations.")
     parser.add_argument("--adv_alpha", type=float, default=0.01,

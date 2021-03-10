@@ -77,6 +77,9 @@ class Attention(nn.Module):
         # W for layer embeddings
         self.layer_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
+         # W for layer embeddings
+        self.task_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+
         self.V = nn.Linear(self.args.hidden_size, 1)
 
         self.mha = MultiheadAttention(args)
@@ -91,13 +94,12 @@ class Attention(nn.Module):
         self.norm2 = nn.GroupNorm(1, self.args.hidden_size)
 
         
-    def forward(self, layer_embs, hidden_state, layer_mask, enc_state):
-        inp = torch.cat((layer_embs, hidden_state, enc_state))
-
+    def forward(self, layer_embs, hidden_state, enc_state, task_emb):
+        inp = torch.cat((layer_embs, hidden_state, enc_state, task_emb))
         
         mha_out = self.mha(inp)
         mha_out = self.dropout1(mha_out)
-        mha_out  = self.norm1(mha_out + inp)
+        mha_out = self.norm1(mha_out + inp)
         
         pw_out = self.point_wise_linear1(mha_out)
         pw_out = self.point_wise_linear2(pw_out)
@@ -106,16 +108,20 @@ class Attention(nn.Module):
 
 
         # (batch_size, num_layers, hidden_size)
-        layer_trans = self.layer_W(out[:-2])
+        layer_trans = self.layer_W(out[:-3])
         #print("layer_trans.shape", layer_trans.shape)
-        # (batch_size, 1, hidden_size)
-        hidden_trans = self.hidden_W(out[-2].unsqueeze(0)).unsqueeze(1)
+        
+        # (batch_size, hidden_size)
+        hidden_trans = self.hidden_W(out[-3].unsqueeze(0)).unsqueeze(1)
         #print("hidden_trans.shape", hidden_trans.shape)
         
-        state_trans = self.state_W(out[-1].unsqueeze(0)).unsqueeze(1)
+        state_trans = self.state_W(out[-2].unsqueeze(0)).unsqueeze(1)
+
+        task_trans = self.task_W(out[-1].unsqueeze(0)).unsqueeze(1)
+        
         
         # (batch_size, num_layers)
-        u_i = self.V(torch.tanh(layer_trans + hidden_trans + state_trans)).squeeze(-1)
+        u_i = self.V(torch.tanh(layer_trans + hidden_trans + state_trans + task_trans)).squeeze(-1)
     
         # Scale the output
         u_i = u_i / torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
@@ -215,7 +221,7 @@ class Router(nn.Module):
         failed = False
         cur_loss = None
         action_probs = []
-
+    
         # Build the model architecture 
         for i in range(self.args.max_depth):
             # Update inputs
@@ -228,10 +234,10 @@ class Router(nn.Module):
             # Compute critic output 
             h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
             v_t = self.critic_out(F.relu(h_t_critic))
-            critic_outputs.append(v_t)
+            critic_outputs.append(v_t.squeeze(0))
             
             # Get attention distribution over layers
-            layer_probs = self.att(layer_embs, h_t_router, layer_mask, enc_state)
+            layer_probs = self.att(layer_embs, h_t_router, enc_state, task_emb)
 
             # Choose a layers
             if argmax:
