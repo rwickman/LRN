@@ -15,6 +15,8 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
+
+        # Size of each hidden vector of a head
         self.depth = self.args.hidden_size // self.args.num_heads
 
         self.W_q = nn.Linear(self.args.hidden_size, self.args.hidden_size)
@@ -25,7 +27,12 @@ class MultiHeadAttention(nn.Module):
         self.mha_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
     def split_heads(self, x):
+        
+        #print("BEFORE split_heads", x.shape)
+        # (batch size, num tokens,  num heads, depth)
         x = torch.reshape(x, (1, -1, self.args.num_heads, self.depth))
+        
+        # (batch size, num heads, num tokens, depth)
         return x.transpose(2,1)
 
     def forward(self, q, k, v):
@@ -36,18 +43,23 @@ class MultiHeadAttention(nn.Module):
         qk = torch.matmul(q, k.transpose(3,2))
 
         dk = torch.tensor(q.shape[-1], dtype=torch.float32)
-        
-        att_weights = F.softmax(qk / torch.sqrt(dk), dim=1)
+        #print("dk", dk)
+        #print(qk.shape)
+        att_weights = F.softmax(qk / torch.sqrt(dk), dim=-1)
+        # print(att_weights)
+        # print("att_weights.shape", att_weights.shape)
+        # print("v.shape", v.shape)
         scaled_att = torch.matmul(att_weights, v)
-
+        #print("scaled_att.shape", scaled_att.shape)
         # (batch_size, layers+hidden+enc_state, num_heads, depth)
         scaled_att = scaled_att.transpose(2,1)
-        
+        #print("scaled_att..transpose(2,1).shape", scaled_att.shape)
         # Squeeze MHA together for each embedding
         scaled_att = torch.reshape(scaled_att, (1, -1, self.args.hidden_size))
-
+        #print("torch.reshape(scaled_att.shape", scaled_att.shape)
         # Combine the MHA for each embedding
         out = self.mha_W(scaled_att).squeeze(0)
+        #print(out.shape)
 
         return out, att_weights
 
@@ -55,18 +67,18 @@ class PointWiseFFN(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.fc1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
-        self.fc2 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
-        self.dropout1 = nn.Dropout(self.args.drop_rate)
-        self.norm1 = nn.LayerNorm(self.args.hidden_size)
+        self.fc1 = nn.Linear(self.args.hidden_size, self.args.dff)
+        self.fc2 = nn.Linear(self.args.dff, self.args.hidden_size)
+        #self.dropout1 = nn.Dropout(self.args.drop_rate)
+        #self.norm1 = nn.LayerNorm(self.args.hidden_size)
 
     def forward(self, x):
         pw_out = F.relu(self.fc1(x))
         pw_out = self.fc2(pw_out)
-        pw_out = self.dropout1(pw_out)
-        out = self.norm1(x + pw_out)
+        #pw_out = self.dropout1(pw_out)
+        #out = self.norm1(x + pw_out)
 
-        return out
+        return pw_out
 
 
 class EncoderLayer(nn.Module):
@@ -200,7 +212,8 @@ class TransformerRouter(nn.Module):
         self.decoder = Decoder(self.args)
 
         # Maps each decorder embedding to 1 value
-        self.actor_out = nn.Linear(self.args.hidden_size, 1)
+        self.actor_out1 = nn.Linear(self.args.hidden_size, 16)
+        self.actor_out2 = nn.Linear(16, 1)
         
 
     def forward(self, state, layer_embs):
@@ -209,9 +222,12 @@ class TransformerRouter(nn.Module):
         dec_output, att_weights = self.decoder(layer_embs, enc_output)
         
         # batch size, len(layer_embs)
-        layer_scores = self.actor_out(dec_output).squeeze(-1)
-        layer_probs = F.softmax(layer_scores, dim=1)
+        #print("DEC OUT shape", dec_output.shape)
+        actor_out = self.actor_out1(dec_output)
+        actor_out = self.actor_out2(actor_out).squeeze(-1)
 
+
+        layer_probs = F.softmax(actor_out, dim=-1)
         return layer_probs, att_weights
         
 
@@ -238,17 +254,21 @@ class Attention(nn.Module):
         self.mha = MultiHeadAttention(args)
 
         self.norm1 = nn.LayerNorm(self.args.hidden_size)
+        self.norm2 = nn.LayerNorm(self.args.hidden_size)
+        self.pw_ffn = PointWiseFFN(self.args)
+
+        self.dropout1 = nn.Dropout(self.args.drop_rate)
+        self.dropout2 = nn.Dropout(self.args.drop_rate)
+
 
         
     def forward(self, layer_embs, hidden_state, enc_state, task_emb):
-        inp = torch.cat((layer_embs, hidden_state, enc_state, task_emb))
-        
-        mha_out = self.mha(inp)
+        inp = torch.cat((layer_embs.squeeze(0), hidden_state, enc_state, task_emb))
+        mha_out, _ = self.mha(inp, inp, inp)
         mha_out = self.dropout1(mha_out)
         mha_out = self.norm1(mha_out + inp)
         
-        pw_out = self.point_wise_linear1(mha_out)
-        pw_out = self.point_wise_linear2(pw_out)
+        pw_out = self.pw_ffn(mha_out)
         pw_out = self.dropout2(pw_out)
         out = self.norm2(pw_out + mha_out)
 
@@ -272,7 +292,7 @@ class Attention(nn.Module):
         u_i = u_i / torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
 
         # Predictions over layers
-        layer_probs = F.softmax(u_i, dim=1)
+        layer_probs = F.softmax(u_i, dim=-1)
         return layer_probs
 
 class StateEncoder(nn.Module):
@@ -350,7 +370,11 @@ class Router(nn.Module):
         task_emb = self.task_embs(task_id)
 
         # Get layer embeddings
+        # if self.args.constraints:
+        #     layer_emb_indices = self.args.constraints[int(task_id)].copy()
+        # else:
         layer_emb_indices = list(range(self.num_layers+1))
+        
         #layer_embs = self.layer_embs(torch.arange(self.num_layers+1).cuda()).unsqueeze(0)
 
         
@@ -371,7 +395,7 @@ class Router(nn.Module):
         cur_loss = None
         action_probs = []
         
-        
+        att_weights_list = []
         state = torch.cat((enc_state, task_emb)).unsqueeze(0)
 
         # Build the model architecture 
@@ -379,7 +403,11 @@ class Router(nn.Module):
             inp = torch.cat((enc_state, task_emb, layer_emb_choice), 1)
             # Update inputs
             layer_embs = self.layer_embs(torch.tensor(layer_emb_indices).cuda()).unsqueeze(0)
+            
+            #h_t_router, c_t_router = self.critic_cell(inp, (h_t_router, c_t_router))
+            #layer_probs = self.att(layer_embs, h_t_router, enc_state, task_emb)
             layer_probs, att_weights = self.trans_router(state, layer_embs)
+            att_weights_list.append(att_weights)
 
             # Compute critic output 
             h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
@@ -409,7 +437,16 @@ class Router(nn.Module):
             # Setup next state
             if i +1 < self.args.max_depth:
                 chosen_layers = self.layer_embs(torch.tensor(actions).cuda())
+                # print("actions", actions)
+                # print("chosen_layers", chosen_layers)
+                # print("chosen_layers.shape", chosen_layers.shape) 
                 state = torch.cat((enc_state, task_emb, chosen_layers)).unsqueeze(0)
+                #print("state.shape", state.shape)
+
+            # Check if constraints are violated
+            if self.args.constraints and int(layer_choice) not in self.args.constraints[int(task_id)]:
+                failed = True
+                break 
 
             # If choice is to PASS, then skip current step
             if layer_choice == PASS_LAYER:
@@ -421,20 +458,35 @@ class Router(nn.Module):
             # Add layer choice
             #layer_mask[layer_choice] = 1
 
-            # Remove the layer choice
-            layer_emb_indices.remove(layer_choice)
-
-            cur_layer = self.layer_manager.get_layer(layer_choice-1)
+            cur_layer = self.layer_manager.get_layer(layer_choice)
             if not builder.attempt_add_layer(cur_layer):
                 # layer was not successfully added
                 failed = True
                 break 
         
+            # Remove the layer choice
+            layer_emb_indices.remove(layer_choice)
+
         if builder.cur_out_size != self.args.num_classes or builder.get_prev_layer() is None:
             failed = True
         
-        return RouterResult(failed, action_probs, actions, action_indices, builder.build(), critic_outputs) 
+        
+
+        return RouterResult(failed, action_probs, actions, action_indices, builder.build(), critic_outputs, att_weights_list) 
     
+
+    def build_fixed(self, layer_ids):
+        """Build a model given the layer IDs."""
+        builder = ModelBuilder(self.args)
+        failed = False
+        for layer_id in layer_ids:
+            cur_layer = self.layer_manager.get_layer(layer_id)
+            if not builder.attempt_add_layer(cur_layer):
+                failed = True
+                break
+        return failed, builder.build()
+            
+
     def save_layers(self):
         self.layer_manager.save()
     
