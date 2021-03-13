@@ -70,7 +70,7 @@ class PointWiseFFN(nn.Module):
         self.fc1 = nn.Linear(self.args.hidden_size, self.args.dff)
         self.fc2 = nn.Linear(self.args.dff, self.args.hidden_size)
         #self.dropout1 = nn.Dropout(self.args.drop_rate)
-        #self.norm1 = nn.LayerNorm(self.args.hidden_size)
+        #self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
 
     def forward(self, x):
         pw_out = F.relu(self.fc1(x))
@@ -93,8 +93,8 @@ class EncoderLayer(nn.Module):
         self.dropout1 = nn.Dropout(self.args.drop_rate)
         self.dropout2 = nn.Dropout(self.args.drop_rate)
         
-        self.norm1 = nn.LayerNorm(self.args.hidden_size)
-        self.norm2 = nn.LayerNorm(self.args.hidden_size)
+        self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+        self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
         
     def forward(self, x):
         # Perform MHA attention
@@ -123,9 +123,9 @@ class DecoderLayer(nn.Module):
         self.dropout2 = nn.Dropout(self.args.drop_rate)
         self.dropout3 = nn.Dropout(self.args.drop_rate)
         
-        self.norm1 = nn.LayerNorm(self.args.hidden_size)
-        self.norm2 = nn.LayerNorm(self.args.hidden_size)
-        self.norm3 = nn.LayerNorm(self.args.hidden_size)
+        self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+        self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+        self.norm3 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
     
     def forward(self, x, enc_output):
         # Preform self attention over available layers
@@ -149,7 +149,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.args = args
         
-        self.enc_layers = [EncoderLayer(self.args).cuda() for _ in range(self.args.num_enc_layers)]
+        self.enc_layers = nn.ModuleList([EncoderLayer(self.args) for _ in range(self.args.num_enc_layers)])
         
         self.dropout = nn.Dropout(self.args.drop_rate)
     
@@ -164,8 +164,8 @@ class Encoder(nn.Module):
         x = self.dropout(x)
 
         # Run through all encoder layer
-        for i in range(self.args.num_enc_layers):
-            x = self.enc_layers[i](x)
+        for enc_layer in self.enc_layers:
+            x = enc_layer(x)
         
         # Return output of last encoder layer
         return x
@@ -177,7 +177,7 @@ class Decoder(nn.Module):
 
         self.pos_enc = positional_encoding(self.args.max_pos_enc, self.args.hidden_size)
 
-        self.dec_layers = [DecoderLayer(self.args).cuda() for _ in range(self.args.num_enc_layers)]
+        self.dec_layers = nn.ModuleList([DecoderLayer(self.args) for _ in range(self.args.num_enc_layers)])
         
         self.dropout = nn.Dropout(self.args.drop_rate)
     
@@ -194,8 +194,8 @@ class Decoder(nn.Module):
         att_weights = {}
 
         # Run through all decoder layers
-        for i in range(self.args.num_enc_layers):
-            x, att_weights1, att_weights2 = self.dec_layers[i](x, enc_output)
+        for i, dec_layer in enumerate(self.dec_layers):
+            x, att_weights1, att_weights2 = dec_layer(x, enc_output)
 
             att_weights['decoder_layer{}_weights1'.format(i+1)] = att_weights1
             att_weights['decoder_layer{}_weights2'.format(i+1)] = att_weights2
@@ -253,8 +253,8 @@ class Attention(nn.Module):
 
         self.mha = MultiHeadAttention(args)
 
-        self.norm1 = nn.LayerNorm(self.args.hidden_size)
-        self.norm2 = nn.LayerNorm(self.args.hidden_size)
+        self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+        self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
         self.pw_ffn = PointWiseFFN(self.args)
 
         self.dropout1 = nn.Dropout(self.args.drop_rate)
