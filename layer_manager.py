@@ -29,6 +29,7 @@ class LayerManager:
 
         # Add softmax for prediction
         # self._add_layer(nn.Softmax)
+        print(self._layer_dict)
 
     def save(self):
         """Save the layers."""
@@ -41,7 +42,7 @@ class LayerManager:
             os.path.join(self.args.save_dir, "layer_modules.pt"))
 
     def _add_layer(self, layer):
-        self._layer_dict[len(self._layer_dict)] = layer
+        self._layer_dict[len(self._layer_dict)+1] = layer
 
     def get_layer(self, idx):
         return self._layer_dict[idx]

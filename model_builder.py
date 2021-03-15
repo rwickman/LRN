@@ -8,9 +8,9 @@ class ModelBuilder:
         self._layers = []
         self._update_out_size()
 
-    def attempt_add_layer(self, cur_layer):
+    def attempt_add_layer(self, cur_layer, cur_depth):
         prev_layer = self.get_prev_layer()
-        if is_valid_mapping(prev_layer, cur_layer, self.cur_out_size):
+        if is_valid_mapping(prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes):
             if isinstance(prev_layer, nn.Conv2d) and isinstance(cur_layer, nn.Linear):
                 self._layers.append(nn.Flatten())
             self._layers.append(cur_layer)
@@ -19,6 +19,10 @@ class ModelBuilder:
         else:
             return False
     
+    def is_valid_layer(self, cur_layer, cur_depth):
+        prev_layer = self.get_prev_layer()
+        return is_valid_mapping(prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes)
+
     def get_prev_layer(self):
         if len(self._layers) == 0:
             return None

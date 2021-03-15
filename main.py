@@ -22,13 +22,17 @@ if __name__ == "__main__":
         help="Latent size of the layer embeddings.")
     parser.add_argument("--task_emb_size", type=int, default=256,
         help="Latent size of the task embeddings.")
+    parser.add_argument("--dff", type=int, default=512,
+        help="Latent size of the hidden state.")
     parser.add_argument("--hidden_size", type=int, default=256,
         help="Latent size of the hidden state.")
-    parser.add_argument("--max_depth", type=int, default=4,
+    parser.add_argument("--max_depth", type=int, default=3,
         help="Latent size of the hidden state.")
-    parser.add_argument("--batch_size", type=int, default=1,
+    parser.add_argument("--lr", type=float, default=1e-4,
+        help="Router learning rate.")
+    parser.add_argument("--batch_size", type=int, default=16,
         help="Batch size.")
-    parser.add_argument("--drop_rate", type=float, default=0.2,
+    parser.add_argument("--drop_rate", type=float, default=0.1,
         help="Dropout rate for state encoder .")
     parser.add_argument("--num_dup_layers", type=int, default=4,
         help="Number of duplicate layers .")
@@ -44,8 +48,27 @@ if __name__ == "__main__":
         help="Critic lambda.")
     parser.add_argument("--train_iter", type=int, default=10000,
         help="Number of training router iterations.")
-    parser.add_argument("--adv_alpha", type=float, default=0.01,
+    parser.add_argument("--epochs", type=int, default=100,
+        help="Number of training epochs.")
+    parser.add_argument("--adv_alpha", type=float, default=0.05,
         help="Number of training router iterations.")
     parser.add_argument("--num_heads", type=int, default=4,
-        help="Number of training router iterations.")
+        help="Number attention heads.")
+    parser.add_argument("--num_enc_layers", type=int, default=2,
+        help="Number of encoder layers used for router.")
+    parser.add_argument("--max_pos_enc", type=int, default=10000,
+        help="Maximum positional encoding for encoder.")
+    parser.add_argument("--load_constraints", default=None,
+        help="JSON constraints.")
+    parser.add_argument("--train_data", default="data/mnist-mtl.npy",
+        help="NPY train dataset.")
+    parser.add_argument("--test_data", default="data/mnist-mtl-test.npy",
+        help="NPY test dataset.")
+    parser.add_argument("--decision_threshold", type=float, default=0.5,
+        help="Decision threshold used for task classification.")
+    parser.add_argument("--no_reward_bonus", action="store_true",
+        help="Don't use a reward bonus.")
+    parser.add_argument("--results", default="results.json",
+        help="File to save JSON results.")
+    
     main(parser.parse_args())
