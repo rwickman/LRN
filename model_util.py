@@ -38,11 +38,16 @@ def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_
 
     elif isinstance(prev_layer, nn.Conv2d):
         if isinstance(cur_layer, nn.Conv2d):
-            # Check if channels  match
-            return prev_layer.out_channels == cur_layer.in_channels
+            # Check if channels match and not last layer
+            return prev_layer.out_channels == cur_layer.in_channels and cur_depth < max_depth - 1
         elif isinstance(cur_layer, nn.Linear):
-            # The output of the Conv layer must match linear
-            return out_size == cur_layer.in_features
+            if cur_depth < max_depth - 1:
+                # The output of the Conv layer must match linear
+                return out_size == cur_layer.in_features
+            else:
+                # As this is the last layer, the output must equal the number of classes
+                return out_size == cur_layer.in_features and cur_layer.out_features == num_classes 
+
         elif cur_layer is None:
             # Only use PASS_LAYER if not at last depth
             return cur_depth < max_depth - 1
@@ -55,8 +60,12 @@ def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_
             # A Conv layer cannot follow a Linear layer
             return False
         elif isinstance(cur_layer, nn.Linear):
-            # Check if features match
-            return prev_layer.out_features == cur_layer.in_features
+            if cur_depth < max_depth - 1:
+                # Check if features match
+                return out_size == cur_layer.in_features
+            else:
+                # As this is the last layer, the output must equal the number of classes
+                return out_size == cur_layer.in_features and cur_layer.out_features == num_classes
         elif cur_layer is None:
             # Only use PASS_LAYER if not at last depth or already added last layer
             return cur_depth < max_depth - 1 or prev_layer.out_features == num_classes
