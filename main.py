@@ -46,6 +46,8 @@ if __name__ == "__main__":
         help="Entropy lambda.")
     parser.add_argument("--critic_lam", type=float, default=1.0,
         help="Critic lambda.")
+    parser.add_argument("--load_bal_lam", type=float, default=0.1,
+        help="Load-balancing lambda.")
     parser.add_argument("--train_iter", type=int, default=10000,
         help="Number of training router iterations.")
     parser.add_argument("--epochs", type=int, default=100,

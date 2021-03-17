@@ -17,7 +17,7 @@ action_sets = {}
 class Trainer:
     def __init__(self, args):
         self.args = args
-        self._router = Router(args, 2).cuda()
+        self._router = Router(args, 10).cuda()
         
         self.load_data()
         
@@ -37,10 +37,18 @@ class Trainer:
         model_bce_losses = []
         test_f1_scores = []
         test_acc_scores = []
-        success_per_epoch = np.zeros(self.args.epochs)
+
+        # Fraction of probability allocated to layer over batch
+        action_prob_sum = torch.zeros(self._router.num_layers + 1, 1).cuda()
+
+        # Fraction of tasks allocated to layer over batch
+        action_count = torch.zeros(self._router.num_layers + 1, 1).cuda()
+        
         self.train_data = self.train_data
         print("len(self.train_data)", len(self.train_data))
-        self.train_data = self.train_data[:512]
+        self.train_data = self.train_data[:2048]
+        action_probs_batch = []
+        action_indices_batch = [] 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
             for i, ex in enumerate(self.train_data):
@@ -58,7 +66,10 @@ class Trainer:
 
                 router_result = self._router(img, task)
                 action_probs, actions, model, critic_outputs = router_result.action_probs, router_result.actions, router_result.model, router_result.critic_outputs  
+                action_probs_batch.append(action_probs)
+                action_indices_batch.append(router_result.action_indices)
 
+                # Add reward bonus
                 rewards = torch.zeros_like(torch.tensor(actions), dtype=torch.float64).cuda()
                 if not self.args.no_reward_bonus and len(actions) > 0:
                     bonus_mask = torch.tensor(actions) != 0
@@ -66,35 +77,37 @@ class Trainer:
                     rewards[bonus_mask] += self.layer_reward_bonus(actions, bonus_mask)
 
                 if router_result.failed:
-                    rewards[-1] = -5
-                else:
-                    success_per_epoch[epoch] += 1
-                    # Record the task architecture
-                    # if epoch > 50:
-                    action_task_pair = ((task.cpu().numpy()[0], target.cpu().numpy()[0]), tuple(actions)) 
-                    if action_task_pair not in action_sets:
-                        action_sets[action_task_pair] = 0
-                    action_sets[action_task_pair] +=1
-            
-                    model_optim = optim.SGD(model.parameters(), lr=1e-3)
-                    pred = model(img)
+                    print(model)
+                    assert not router_result.failed
+                # Run through output network
+                # Record the task architecture
+                # if epoch > 50:
+                action_task_pair = ((task.cpu().numpy()[0], target.cpu().numpy()[0]), tuple(actions)) 
+                if action_task_pair not in action_sets:
+                    action_sets[action_task_pair] = 0
+                action_sets[action_task_pair] +=1
+        
+                model_optim = optim.SGD(model.parameters(), lr=1e-3)
+                pred = model(img)
 
-                    loss = bce_loss_fn(pred[0], target)
-                    model_bce_losses.append(loss.detach().cpu().numpy())
-                    print("MODEL LOSS: ", loss, "pred", torch.sigmoid(pred)[0].detach().cpu().numpy()[0], "vs", target.cpu().numpy()[0])
+                loss = bce_loss_fn(pred[0], target)
+                model_bce_losses.append(loss.detach().cpu().numpy())
+                #print("MODEL LOSS: ", loss, "pred", torch.sigmoid(pred)[0].detach().cpu().numpy()[0], "vs", target.cpu().numpy()[0])
 
-                    loss.backward()
-                    model_optim.step()
-                    model_optim.zero_grad()
-                    rewards[-1] += -loss.detach().cpu().numpy()
-                    # print("rewards", rewards)
+                loss.backward()
+                model_optim.step()
+                model_optim.zero_grad()
+                rewards[-1] += -loss.detach().cpu().numpy()
+                # print("rewards", rewards)
 
+                
                 returns, advs, tdlamret = self.compute_return(rewards, action_probs, critic_outputs)
                 #returns[:len(added_layers)] += self.layer_reward_bonus(added_layers) 
                 loss = torch.zeros(1).cuda()
                 advantage = torch.zeros_like(returns)
                 total_critic_loss = 0
 
+                # Compute loss
                 for t in range(len(action_probs)):
                     critic_loss = self.critic_loss_fn(critic_outputs[t].squeeze(0), tdlamret[t]) * (1/len(critic_outputs)) * self.args.critic_lam 
 
@@ -123,7 +136,17 @@ class Trainer:
                     #     loss += action_probs[t][0][actions[t]] * 10
 
                     # Add entropy regularization
-                    loss += -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10))
+                    #loss += -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10))
+
+                    # Add load-balancing loss
+                    action_prob_sum[actions[t]] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[t][0][router_result.action_indices[t]]
+                    action_count[actions[t]] += 1/(self.args.batch_size * self.args.max_depth) 
+                    
+                    #print("ACTOR LOSS", -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv)
+                    #load_balance_loss = 1000 * self._router.num_layers * (1/(self.args.batch_size * self.args.max_depth)**2) * action_probs[t][0][router_result.action_indices[t]]
+                    #print("LOAD BALANCE LOSS", load_balance_loss)
+                    #loss += load_balance_loss
+
                 
                 critic_losses.append(total_critic_loss)
                 #print("Entropy loss", -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10)))
@@ -137,8 +160,19 @@ class Trainer:
                 
                 # print("loss", loss)
                 # print("total_loss", total_loss)
-
+                
                 if (i + 1) % self.args.batch_size == 0:
+
+                    # Load-balance loss
+                    load_balance_loss = torch.zeros(1).cuda()
+                    for j in range(len(action_prob_sum)):
+                         load_balance_loss += self.args.load_bal_lam * self._router.num_layers * action_prob_sum[j] * action_count[j]
+                    print("load_balance_loss", load_balance_loss)
+                    print("total_loss", total_loss)
+                    total_loss += load_balance_loss
+                    # for i in range(len(action_probs_batch)):
+                    #     for t in range(len(action_probs)):
+                    #         total_loss += action_probs_batch[i][t][0][action_indices_batch[i][t]] / self.args.batch_size 
                     #print(self._router.state_encoder.fc1.weight.grad)
                     #print("self._router.state_encoder.fc1.weight.grad.max()", self._router.state_encoder.fc1.weight.grad.max())
                     # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
@@ -158,6 +192,11 @@ class Trainer:
                     self.optimizer.step()
                     total_loss = None
                     self.optimizer.zero_grad()
+                    # Fraction of probability allocated to layer over batch
+                    action_prob_sum = torch.zeros(self._router.num_layers + 1, 1).cuda()
+
+                    # Fraction of tasks allocated to layer over batch
+                    action_count = torch.zeros(self._router.num_layers + 1, 1).cuda()
 
                 if i % 100 == 0:
                     print("\ntask", task, " target", target)
@@ -192,24 +231,21 @@ class Trainer:
             "model_bce_losses" : model_bce_losses,
             "test_f1_scores" :test_f1_scores,
             "test_acc_scores" : test_acc_scores,
-            "success_per_epoch" : success_per_epoch,
             "epochs" : self.args.epochs,
             "constraints" : self.args.constraints
         }
-        fig, axes = plt.subplots(5)
+        fig, axes = plt.subplots(2)
         axes[0].plot(critic_losses)
         axes[0].set_title("Critic Loss")
         axes[1].plot(model_bce_losses)
         axes[1].set_title("BCE Loss")
 
-        axes[2].plot(test_f1_scores)
-        axes[2].set_title("Test F1 Score")
+        # axes[2].plot(test_f1_scores)
+        # axes[2].set_title("Test F1 Score")
 
-        axes[3].plot(test_acc_scores)
-        axes[3].set_title("Test Accuracy")
+        # axes[3].plot(test_acc_scores)
+        # axes[3].set_title("Test Accuracy")
 
-        axes[4].plot(success_per_epoch/len(self.train_data))
-        axes[4].set_title("Success Per Epoch")
 
         plt.show()
         self.save_results(train_results)
@@ -346,4 +382,4 @@ class Trainer:
 
     def save_results(self, train_results):
         with open(self.args.results, "w") as f:
-            json.dumps(train_results, f)
+            json.dump(train_results, f)
