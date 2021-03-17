@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
+import random
 from dataclasses import dataclass
 from typing import List
 
@@ -355,7 +356,7 @@ class Router(nn.Module):
         #self.att = Attention(self.args)
 
 
-    def forward(self, state, task_id, argmax=False):
+    def forward(self, state, task_id, argmax=False, should_drop_layers=True):
         # Encode the state
         enc_state = self.state_encoder(state)
 
@@ -398,14 +399,19 @@ class Router(nn.Module):
         att_weights_list = []
         state = torch.cat((enc_state, task_emb)).unsqueeze(0)
 
-
-
         # Build the model architecture 
         for i in range(self.args.max_depth):
             # Update the valid layers
             valid_layers = self._get_valid_layers(builder, layer_emb_indices, i)
-            print("DEPTH:", i, "VALID LAYERS", valid_layers)
+
+            # Perform layer dropout
+            if should_drop_layers:
+                valid_layers = self.layer_dropout(valid_layers)
+            
+            # TODO: ADD EXPERT DROPOUT
+            #print("DEPTH:", i, "VALID LAYERS", valid_layers)
             inp = torch.cat((enc_state, task_emb, layer_emb_choice), 1)
+
             # Update inputs
             layer_embs = self.layer_embs(torch.tensor(valid_layers).cuda()).unsqueeze(0)
             
@@ -421,7 +427,8 @@ class Router(nn.Module):
 
             # Choose a layers
             if argmax:
-                pass
+                layer_sample = layer_probs.argmax()
+                layer_choice = valid_layers[layer_sample]
             else:
                 # if np.random.rand() > 0.95:
                 #     layer_choice = torch.tensor([np.random.choice(torch.where(layer_mask == 0)[0].cpu().numpy())]).cuda()
@@ -521,3 +528,22 @@ class Router(nn.Module):
                 valid_layers.append(l_i)
 
         return valid_layers
+    
+    def layer_dropout(self, valid_layers):
+        if len(valid_layers) == 1:
+            # Require at least one layer
+            return valid_layers
+
+        nondropped_layers = []
+        for i in range(len(valid_layers)):
+
+            if random.random() >= self.args.layer_drop_rate:
+                nondropped_layers.append(valid_layers[i])
+        
+        if len(nondropped_layers) == 0:
+            # Add random layer if all the layers were dropped
+            nondropped_layers.append(random.choice(valid_layers))
+
+        return nondropped_layers
+                
+        
