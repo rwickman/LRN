@@ -1,10 +1,15 @@
 import argparse
-
 from trainer import Trainer
+import os, sys
+sys.path.append(os.path.abspath("benchmarks"))
+from mnist_benchmarks import run_mnist_benchmarks
 
 def main(args):
-    model_trainer = Trainer(args) 
-    model_trainer.train()
+    if args.run_mnist_benchmarks:
+        run_mnist_benchmarks(args)
+    else:
+        model_trainer = Trainer(args) 
+        model_trainer.train()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -33,7 +38,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16,
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.1,
-        help="Dropout rate for state encoder .")
+        help="Dropout rate.")
+    parser.add_argument("--layer_drop_rate", type=float, default=0.2,
+        help="Layer dropout rate for router.")
     parser.add_argument("--num_dup_layers", type=int, default=4,
         help="Number of duplicate layers .")
     parser.add_argument("--num_classes", type=int, default=1,
@@ -56,7 +63,7 @@ if __name__ == "__main__":
         help="Number of training router iterations.")
     parser.add_argument("--num_heads", type=int, default=4,
         help="Number attention heads.")
-    parser.add_argument("--num_enc_layers", type=int, default=2,
+    parser.add_argument("--num_enc_layers", type=int, default=1,
         help="Number of encoder layers used for router.")
     parser.add_argument("--max_pos_enc", type=int, default=10000,
         help="Maximum positional encoding for encoder.")
@@ -72,5 +79,8 @@ if __name__ == "__main__":
         help="Don't use a reward bonus.")
     parser.add_argument("--results", default="results.json",
         help="File to save JSON results.")
-    
+    parser.add_argument("--run_mnist_benchmarks", action="store_true",
+        help="Run MNIST benchmarks.")
+
+
     main(parser.parse_args())
