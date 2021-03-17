@@ -5,9 +5,11 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import matplotlib.pyplot as plt
-from router import Router
 from sklearn.metrics import f1_score
+
+from router import Router
 from model_util import plot_attention_weights
+from data_loader import DataLoader
 
 
 bce_loss_fn = nn.BCEWithLogitsLoss()
@@ -17,9 +19,9 @@ action_sets = {}
 class Trainer:
     def __init__(self, args):
         self.args = args
-        self._router = Router(args, 10).cuda()
-        
+        self._router = Router(args, 2).cuda()
         self.load_data()
+        
         
         #print(self._router.parameters())
         self.optimizer = optim.RMSprop(self._router.parameters(), lr=self.args.lr)#, betas=(0.5, 0.59))
@@ -44,9 +46,10 @@ class Trainer:
         # Fraction of tasks allocated to layer over batch
         action_count = torch.zeros(self._router.num_layers + 1, 1).cuda()
         
-        self.train_data = self.train_data
-        print("len(self.train_data)", len(self.train_data))
-        self.train_data = self.train_data[:2048]
+        #print("len(self.train_data)", len(self.train_data))
+        #self.train_data = self.train_data[:1024]
+        #self.test_data = self.test_data[:256]
+
         action_probs_batch = []
         action_indices_batch = [] 
         for epoch in range(self.args.epochs):
@@ -87,17 +90,17 @@ class Trainer:
                     action_sets[action_task_pair] = 0
                 action_sets[action_task_pair] +=1
         
-                model_optim = optim.SGD(model.parameters(), lr=1e-3)
+                model_optim = optim.SGD(model.parameters(), lr=1e-4)
                 pred = model(img)
 
                 loss = bce_loss_fn(pred[0], target)
-                model_bce_losses.append(loss.detach().cpu().numpy())
                 #print("MODEL LOSS: ", loss, "pred", torch.sigmoid(pred)[0].detach().cpu().numpy()[0], "vs", target.cpu().numpy()[0])
 
                 loss.backward()
                 model_optim.step()
                 model_optim.zero_grad()
                 rewards[-1] += -loss.detach().cpu().numpy()
+                model_bce_losses.append(float(loss.detach().cpu().numpy()))
                 # print("rewards", rewards)
 
                 
@@ -216,12 +219,9 @@ class Trainer:
 
                     print(router_result.failed, model, actions, "\n")
             
-            # Test the model on testing set
-                if i % 100 == 0:
-                    if self.args.load_constraints:
-                        test_f1_score, test_acc_score = self.test_models()
-                        test_f1_scores.append(test_f1_score)
-                        test_acc_scores.append(test_acc_score)
+            test_f1_score, test_acc_score = self.test_models()
+            test_f1_scores.append(test_f1_score)
+            test_acc_scores.append(test_acc_score)
 
         for pair in sorted(list(action_sets.items()), key=lambda a: a[1]):
             print(pair)
@@ -234,17 +234,17 @@ class Trainer:
             "epochs" : self.args.epochs,
             "constraints" : self.args.constraints
         }
-        fig, axes = plt.subplots(2)
+
+        fig, axes = plt.subplots(4)
         axes[0].plot(critic_losses)
         axes[0].set_title("Critic Loss")
         axes[1].plot(model_bce_losses)
         axes[1].set_title("BCE Loss")
+        axes[2].plot(test_f1_scores)
+        axes[2].set_title("Test F1 Score")
 
-        # axes[2].plot(test_f1_scores)
-        # axes[2].set_title("Test F1 Score")
-
-        # axes[3].plot(test_acc_scores)
-        # axes[3].set_title("Test Accuracy")
+        axes[3].plot(test_acc_scores)
+        axes[3].set_title("Test Accuracy")
 
 
         plt.show()
@@ -316,26 +316,9 @@ class Trainer:
         self._router.load_layers()
 
     def load_data(self):
-        # Load training data
-        with open(self.args.train_data, 'rb') as f:
-            fsz = os.fstat(f.fileno()).st_size
-            print(fsz)
-            self.train_data = np.load(f, allow_pickle=True)
-            while f.tell() < fsz:
-                self.train_data = np.vstack((self.train_data, np.load(f, allow_pickle=True)))
-    
-        np.random.shuffle(self.train_data)
-
-        # Load testing data
-        with open(self.args.test_data, 'rb') as f:
-            fsz = os.fstat(f.fileno()).st_size
-            print(fsz)
-            self.test_data = np.load(f, allow_pickle=True)
-            while f.tell() < fsz:
-                self.test_data = np.vstack((self.test_data, np.load(f, allow_pickle=True)))
-    
-        np.random.shuffle(self.test_data)
-
+        self._data_loader = DataLoader(self.args)
+        
+        self.train_data, self.test_data = self._data_loader.load_mnist()
 
         # Load constraints if specified
         if self.args.load_constraints:
@@ -352,26 +335,34 @@ class Trainer:
     def test_models(self):
         # build model based on constraints only without router
         models = {}
-        for k,v in self.args.constraints.items(): 
-            failed, model = self._router.build_fixed(v)
-            
-            # Verify that the given constraints are valid
-            assert not failed
-
-            models[k] = model
-        
-        # Calculate the accuracy
+        #for k,v in self.args.constraints.items():
         y_trues = np.zeros(len(self.test_data))
         y_preds = np.zeros(len(self.test_data))
-        for i, ex in enumerate(self.test_data):
-            task = ex[0]
-            img = torch.tensor(ex[1]).cuda()
-            
-            # Get predicted binary classification
-            pred_model = models[task](img)
-            pred = torch.sigmoid(models[task](img))
+        for i, test_ex in enumerate(self.test_data): 
+            task = torch.tensor([test_ex[0]]).cuda()
+            img = torch.tensor(test_ex[1]).cuda()
+            y_trues[i] = test_ex[2]
+            #failed, model = self._router.build_fixed(v)
+            router_result = self._router(img, task, argmax=True, should_drop_layers=False)
+            pred = router_result.model(img)
             y_preds[i] = int(pred >= self.args.decision_threshold)
-            y_trues[i]  = ex[2]
+                        
+            # # Verify that the given constraints are valid
+            # assert not failed
+
+            # models[k] = model
+        
+        # Calculate the accuracy
+
+        # for i, ex in enumerate(self.test_data):
+        #     task = ex[0]
+        #     img = torch.tensor(ex[1]).cuda()
+            
+        #     # Get predicted binary classification
+        #     pred_model = models[task](img)
+        #     pred = torch.sigmoid(models[task](img))
+        #     y_preds[i] = int(pred >= self.args.decision_threshold)
+        #     y_trues[i]  = ex[2]
 
         test_f1_score = f1_score(y_trues, y_preds)
         print("F1 score of testing dataset", test_f1_score)
