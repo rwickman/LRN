@@ -1,5 +1,5 @@
 import argparse
-from trainer import Trainer
+from classifier_trainer import ClassifierTrainer
 import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
 from mnist_benchmarks import run_mnist_benchmarks
@@ -8,13 +8,15 @@ def main(args):
     if args.run_mnist_benchmarks:
         run_mnist_benchmarks(args)
     else:
-        model_trainer = Trainer(args) 
+        model_trainer = ClassifierTrainer(args) 
         model_trainer.train()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--load", action="store_true",
         help="Load prior progress.")
+    parser.add_argument("--num_tasks", type=int, default=10,
+        help="Number of tasks.")
     parser.add_argument("--save_dir", default="models",
         help="Directory to save models.")
     parser.add_argument("--img_size", type=int, default=28,
@@ -35,6 +37,8 @@ if __name__ == "__main__":
         help="Latent size of the hidden state.")
     parser.add_argument("--lr", type=float, default=1e-4,
         help="Router learning rate.")
+    parser.add_argument("--fb_lr", type=float, default=1e-4,
+        help="Output model learning rate.")
     parser.add_argument("--batch_size", type=int, default=16,
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.1,
