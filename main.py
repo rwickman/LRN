@@ -1,5 +1,6 @@
 import argparse
 from classifier_trainer import ClassifierTrainer
+from rl_trainer import RLTrainer
 import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
 from mnist_benchmarks import run_mnist_benchmarks
@@ -39,7 +40,7 @@ if __name__ == "__main__":
         help="Router learning rate.")
     parser.add_argument("--fb_lr", type=float, default=1e-4,
         help="Output model learning rate.")
-    parser.add_argument("--batch_size", type=int, default=16,
+    parser.add_argument("--batch_size", type=int, default=32,
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.1,
         help="Dropout rate.")

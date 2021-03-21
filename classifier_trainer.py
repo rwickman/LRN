@@ -6,8 +6,8 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from sklearn.metrics import f1_score
 
-from router import Router
 from trainer import Trainer
+from router import Router
 from model_util import plot_attention_weights
 from data_loader import DataLoader
 from block_trainer import BlockTrainer
@@ -35,8 +35,8 @@ class ClassifierTrainer(Trainer):
         action_count = torch.zeros(self._router.num_layers + 1, 1).cuda()
         
         #print("len(self.train_data)", len(self.train_data))
-        self.train_data = self.train_data[:1024]
-        self.test_data = self.test_data[:512]
+        # self.train_data = self.train_data[:1024]
+        # self.test_data = self.test_data[:512]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -58,7 +58,9 @@ class ClassifierTrainer(Trainer):
 
                 # Add reward bonus
                 rewards = torch.zeros_like(torch.tensor(actions), dtype=torch.float64).cuda()
-                if not self.args.no_reward_bonus and len(actions) > 0:
+                
+                # TODO: FIX THIS
+                if not self.args.no_reward_bonus:
                     bonus_mask = torch.tensor(actions) != 0
                     bonus_mask[-1] = not router_result.failed
                     rewards[bonus_mask] += self.layer_reward_bonus(actions, bonus_mask)

@@ -299,7 +299,9 @@ class StateEncoder(nn.Module):
         self.conv2 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
         #self.norm2 = nn.GroupNorm(1, 32)
         # self.conv3 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
-        # self.norm3 = nn.LayerNorm(1, 32)
+        self.norm1 = nn.LayerNorm((1, 32, self.args.img_size, self.args.img_size))
+        self.norm2 = nn.LayerNorm((1, 32, self.args.img_size, self.args.img_size))
+        
         self.flatten = nn.Flatten()
         self.drop1 = nn.Dropout(self.args.drop_rate)
         
@@ -312,9 +314,9 @@ class StateEncoder(nn.Module):
         #self.fc2 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
     def forward(self, state):
-        #state = F.relu(self.norm1(self.conv1(state)))
-        state = F.relu(self.conv1(state))
-        state = F.relu(self.conv2(state))
+        state = F.relu(self.norm1(self.conv1(state)))
+        #state = F.relu(self.conv1(state))
+        state = F.relu(self.norm2(self.conv2(state)))
         #state = F.relu(self.norm3(self.conv3(state)))
         state = self.flatten(state)
         state = self.drop1(state)
@@ -481,6 +483,7 @@ class Router(nn.Module):
             failed = True
         
         
+        assert not failed
 
         return RouterResult(failed, action_probs, actions, action_indices, builder.build(), critic_outputs, att_weights_list) 
     
