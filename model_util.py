@@ -12,7 +12,6 @@ class RouterResult:
     actions: List[int]
     # The index in the action probability that corresponds to the action (i.e., layer)
     action_indices: List[int]
-    model: nn.Sequential
     critic_outputs: List[torch.Tensor]
     att_weights: List[Dict[str, torch.Tensor]]
 

@@ -19,7 +19,7 @@ class ClassifierTrainer(Trainer):
         super().__init__(args)
 
         self.load_data()
-        self._block_trainer = BlockTrainer(self.args)
+        self._block_trainer = BlockTrainer(self.args, self._fb_model, self.fb_optim)
                 
     def train(self):
         total_loss = None
@@ -29,14 +29,14 @@ class ClassifierTrainer(Trainer):
         test_acc_scores = []
 
         # Fraction of probability allocated to layer over batch
-        action_prob_sum = torch.zeros(self._router.num_layers + 1, 1).cuda()
+        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
         # Fraction of tasks allocated to layer over batch
-        action_count = torch.zeros(self._router.num_layers + 1, 1).cuda()
+        action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
         
         #print("len(self.train_data)", len(self.train_data))
-        # self.train_data = self.train_data[:1024]
-        # self.test_data = self.test_data[:512]
+        self.train_data = self.train_data[:1]
+        self.test_data = self.test_data[:1]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -53,8 +53,8 @@ class ClassifierTrainer(Trainer):
                 img = torch.tensor(ex[1]).cuda()
                 target = torch.tensor(ex[2], dtype=torch.float32).unsqueeze(0).cuda()
 
-                router_result = self._router(img, task)
-                action_probs, actions, model, critic_outputs = router_result.action_probs, router_result.actions, router_result.model, router_result.critic_outputs
+                router_results = self._router(img, task)
+                action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
 
                 # Add reward bonus
                 rewards = torch.zeros_like(torch.tensor(actions), dtype=torch.float64).cuda()
@@ -62,7 +62,7 @@ class ClassifierTrainer(Trainer):
                 # TODO: FIX THIS
                 if not self.args.no_reward_bonus:
                     bonus_mask = torch.tensor(actions) != 0
-                    bonus_mask[-1] = not router_result.failed
+                    bonus_mask[-1] = not router_results.failed
                     rewards[bonus_mask] += self.layer_reward_bonus(actions, bonus_mask)
 
                 # Record the task architecture
@@ -73,7 +73,7 @@ class ClassifierTrainer(Trainer):
                 action_sets[action_task_pair] +=1
                 
                 # Train the output model
-                _, output_loss = self._block_trainer.train(model, img, target  )
+                _, output_loss = self._block_trainer.train(img, [actions], target)
                 
                 
                 # Reward based on model loss
@@ -107,7 +107,7 @@ class ClassifierTrainer(Trainer):
                     
                     #adv = max(min(3.0, advs[t]), -3.0)
                     #adv = max(min(3.0, advs[t]), -3.0)
-                    #loss += -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv
+                    #loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
 
                     delta = advs[t] - self.adv_avg[t] 
                     #adv = (delta) / self.adv_std[t]**0.5
@@ -117,24 +117,24 @@ class ClassifierTrainer(Trainer):
                     self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
                     self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
                     
-                    # if router_result.failed and t + 1 == len(action_probs) and adv >= 0:
+                    # if router_results.failed and t + 1 == len(action_probs) and adv >= 0:
                     #     adv = -3
                         # returns[t] = -3
-                    loss += -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv
+                    loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
                     advantage[t] = adv
 
-                    # if not router_result.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
+                    # if not router_results.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
                     #     loss += action_probs[t][0][actions[t]] * 10
 
                     # Add entropy regularization
                     loss += -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10))
 
                     # Add load-balancing loss
-                    action_prob_sum[actions[t]] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[t][0][router_result.action_indices[t]].clone()
+                    action_prob_sum[actions[t]] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[t][0][router_results.action_indices[t]].clone()
                     action_count[actions[t]] += 1/(self.args.batch_size * self.args.max_depth) 
                     
-                    #print("ACTOR LOSS", -torch.log(action_probs[t][0][router_result.action_indices[t]]) * adv)
-                    #load_balance_loss = 1000 * self._router.num_layers * (1/(self.args.batch_size * self.args.max_depth)**2) * action_probs[t][0][router_result.action_indices[t]]
+                    #print("ACTOR LOSS", -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv)
+                    #load_balance_loss = 1000 * self._router.num_fbs * (1/(self.args.batch_size * self.args.max_depth)**2) * action_probs[t][0][router_results.action_indices[t]]
                     #print("LOAD BALANCE LOSS", load_balance_loss)
                     #loss += load_balance_loss
 
@@ -158,7 +158,7 @@ class ClassifierTrainer(Trainer):
                     # Load-balance loss
                     load_balance_loss = torch.zeros(1).cuda()
                     for j in range(len(action_prob_sum)):
-                         load_balance_loss += self.args.load_bal_lam * self._router.num_layers * action_prob_sum[j] * action_count[j]
+                         load_balance_loss += self.args.load_bal_lam * self._router.num_fbs * action_prob_sum[j] * action_count[j]
                     load_balance_loss.backward()
                     print("load_balance_loss", load_balance_loss)
                     #print(action_prob_sum)
@@ -185,10 +185,10 @@ class ClassifierTrainer(Trainer):
                     total_loss = None
                     self.optimizer.zero_grad()
                     # Fraction of probability allocated to layer over batch
-                    action_prob_sum = torch.zeros(self._router.num_layers + 1, 1).cuda()
+                    action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
                     # Fraction of tasks allocated to layer over batch
-                    action_count = torch.zeros(self._router.num_layers + 1, 1).cuda()
+                    action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
                 if i % 256 == 0:
                     print("\ntask", task, " target", target)
@@ -201,9 +201,9 @@ class ClassifierTrainer(Trainer):
                     # if epoch > 18 and i == 500:
                     #     state_labels = [["Task " + str(int(task)), "Encoded State"] + actions[:i] for i in range(len(actions))]
                     #     layer_ids = [list(set(range(action_probs[0].shape[1])).difference(set(actions[:i]))) for i in range(len(actions))]
-                    #     plot_attention_weights(state_labels, layer_ids, router_result.att_weights)
+                    #     plot_attention_weights(state_labels, layer_ids, router_results.att_weights)
 
-                    print(router_result.failed, model, actions, "\n")
+                    print(router_results.failed, actions, "\n")
 
             test_f1_score, test_acc_score = self.test_models()
             test_f1_scores.append(test_f1_score)
@@ -272,8 +272,6 @@ class ClassifierTrainer(Trainer):
 
     def test_models(self):
         print("Testing models")
-        # build model based on constraints only without router
-        models = {}
         #for k,v in self.args.constraints.items():
         y_trues = np.zeros(len(self.test_data))
         y_preds = np.zeros(len(self.test_data))
@@ -282,18 +280,17 @@ class ClassifierTrainer(Trainer):
             img = torch.tensor(test_ex[1]).cuda()
             y_trues[i] = test_ex[2]
             #failed, model = self._router.build_fixed(v)
-            router_result = self._router(img, task, argmax=True, should_drop_layers=False)
-            # print(router_result.action_probs)
+            router_results = self._router(img, task, argmax=True, should_drop_layers=False)
+            # print(router_results.action_probs)
             # print("TASK:", task)
-            # print(router_result.model)
-            # print(router_result.actions)
+            # print(router_results.model)
+            # print(router_results.actions)
             # print(test_ex[1][0].max())
             # print(test_ex[1][0].min())
 
             # plt.imshow(test_ex[1][0].transpose(1,2,0) * 0.3081 - 0.1307, cmap="gray")
             # plt.show()
-            
-            pred = torch.sigmoid(router_result.model(img))
+            pred = torch.sigmoid(self._fb_model(img, [router_results.actions]))
             y_preds[i] = int(pred >= self.args.decision_threshold)
                         
             # # Verify that the given constraints are valid

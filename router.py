@@ -7,7 +7,7 @@ import random
 from typing import List
 
 from model_util import *
-from layer_manager import LayerManager
+# from layer_manager import LayerManager
 from model_builder import ModelBuilder
 
 
@@ -332,16 +332,16 @@ class StateEncoder(nn.Module):
 
 
 class Router(nn.Module):
-    def __init__(self, args, num_tasks):
+    def __init__(self, args, num_tasks, fb_model):
         super().__init__()
         self.args = args
-        self.layer_manager = LayerManager(self.args)
-        self.num_layers = self.layer_manager.get_num_layers()
+        self.fb_model = fb_model
+        self.num_fbs = self.fb_model.get_num_fbs()
         self.num_tasks = num_tasks
 
         self.trans_router = TransformerRouter(self.args)
 
-        self.layer_embs = nn.Embedding(self.num_layers+1, self.args.hidden_size)
+        self.layer_embs = nn.Embedding(self.num_fbs+1, self.args.hidden_size)
 
         self.task_embs = nn.Embedding(self.num_tasks, self.args.hidden_size)
         
@@ -368,14 +368,14 @@ class Router(nn.Module):
         # if self.args.constraints:
         #     layer_emb_indices = self.args.constraints[int(task_id)].copy()
         # else:
-        layer_emb_indices = list(range(self.num_layers+1))
+        layer_emb_indices = list(range(self.num_fbs+1))
         # valid_layers = self._get_valid_layers(builder, layer_emb_indices)
         
 
         # Get valid layers
 
         
-        #layer_embs = self.layer_embs(torch.arange(self.num_layers+1).cuda()).unsqueeze(0)
+        #layer_embs = self.layer_embs(torch.arange(self.num_fbs+1).cuda()).unsqueeze(0)
 
         
         # h_t_router = torch.zeros(1, self.args.hidden_size).cuda()
@@ -390,7 +390,7 @@ class Router(nn.Module):
 
         actions = []
         action_indices = []
-        layer_mask = torch.zeros(self.num_layers+1).cuda()
+        layer_mask = torch.zeros(self.num_fbs+1).cuda()
         failed = False
         cur_loss = None
         action_probs = []
@@ -462,7 +462,7 @@ class Router(nn.Module):
             # Verify did not choose a layer that has already been selected
             assert layer_choice in layer_emb_indices
             
-            cur_fb = self.layer_manager.get_fb(layer_choice)
+            cur_fb = self.fb_model.get_fb(layer_choice)
             
             # Verify the builder did not fail
             assert builder.attempt_add_fb(cur_fb, i)
@@ -476,53 +476,36 @@ class Router(nn.Module):
             # Remove the layer choice
             layer_emb_indices.remove(layer_choice)
 
-        if builder.cur_out_size != self.args.num_classes or builder.get_prev_layer() is None:
-            failed = True
-        
-        
-        assert not failed
 
-        return RouterResult(failed, action_probs, actions, action_indices, builder.build(), critic_outputs, att_weights_list) 
+        return RouterResult(failed, action_probs, actions, action_indices, critic_outputs, att_weights_list) 
     
 
-    def build_fixed(self, layer_ids):
-        """Build a model given the layer IDs."""
-        builder = ModelBuilder(self.args)
-        failed = False
-        for layer_id in layer_ids:
-            cur_fb = self.layer_manager.get_fb(layer_id)
-            if not builder.attempt_add_fb(cur_fb):
-                failed = True
-                break
-        return failed, builder.build()
+    # def build_fixed(self, layer_ids):
+    #     """Build a model given the layer IDs."""
+    #     builder = ModelBuilder(self.args)
+    #     failed = False
+    #     for layer_id in layer_ids:
+    #         cur_fb = self.fb_modelget_fb(layer_id)
+    #         if not builder.attempt_add_fb(cur_fb):
+    #             failed = True
+    #             break
+    #     return failed, builder.build()
             
 
-    def save_layers(self):
-        self.layer_manager.save()
+    # def save_layers(self):
+    #     self.layer_manager.save()
     
-    def load_layers(self):
-        self.layer_manager.load()
+    # def load_layers(self):
+    #     self.layer_manager.load()
 
     def _get_valid_layers(self, builder, layer_emb_indices, cur_depth):
         # Update the valid layers
         valid_layers = []
         for l_i in layer_emb_indices:
-            # # Skip the PASS layer
-            # if l_i == PASS_LAYER:
-            #     # Only add PASS layer in between first and last layer
-            #     #print("cur_depth", cur_depth, "self.args.num_classes", self.args.num_classes)
-            #     if cur_depth > 0:
-            #         if cur_depth < self.args.max_depth -1:
-            #             if builder.cur_out_size != self.args.num_classes:
-            #                 valid_layers.append(l_i)
-            #         else:
-            #             if builder.cur_out_size == self.args.num_classes:
-            #                 valid_layers.append(l_i)
-            # else:
             if l_i == PASS_LAYER:
                 layer_l_i = None
             else:    
-                layer_l_i = self.layer_manager.get_fb(l_i)
+                layer_l_i = self.fb_model.get_fb(l_i)
             
             if builder.is_valid_fb(layer_l_i, cur_depth):
                 valid_layers.append(l_i)
