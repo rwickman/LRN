@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
 import random
-from dataclasses import dataclass
 from typing import List
 
 from model_util import *
@@ -295,13 +294,11 @@ class StateEncoder(nn.Module):
         self.args = args
 
         self.conv1 = nn.Conv2d(self.args.in_channels, 32, 3, stride=1, padding=1)
-        #self.norm1 = nn.GroupNorm(1, 32)
         self.conv2 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
-        #self.norm2 = nn.GroupNorm(1, 32)
-        # self.conv3 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
-        self.norm1 = nn.LayerNorm((1, 32, self.args.img_size, self.args.img_size))
-        self.norm2 = nn.LayerNorm((1, 32, self.args.img_size, self.args.img_size))
-        
+
+        self.norm1 = nn.InstanceNorm2d(32, affine=True, eps=1e-6)
+        self.norm2 = nn.InstanceNorm2d(32, affine=True, eps=1e-6)
+                
         self.flatten = nn.Flatten()
         self.drop1 = nn.Dropout(self.args.drop_rate)
         
@@ -465,13 +462,13 @@ class Router(nn.Module):
             # Verify did not choose a layer that has already been selected
             assert layer_choice in layer_emb_indices
             
-            cur_layer = self.layer_manager.get_layer(layer_choice)
+            cur_fb = self.layer_manager.get_fb(layer_choice)
             
             # Verify the builder did not fail
-            assert builder.attempt_add_layer(cur_layer, i)
+            assert builder.attempt_add_fb(cur_fb, i)
 
             
-            # if not builder.attempt_add_layer(cur_layer):
+            # if not builder.attempt_add_fb(cur_fb):
             #     # layer was not successfully added
             #     failed = True
             #     break 
@@ -493,8 +490,8 @@ class Router(nn.Module):
         builder = ModelBuilder(self.args)
         failed = False
         for layer_id in layer_ids:
-            cur_layer = self.layer_manager.get_layer(layer_id)
-            if not builder.attempt_add_layer(cur_layer):
+            cur_fb = self.layer_manager.get_fb(layer_id)
+            if not builder.attempt_add_fb(cur_fb):
                 failed = True
                 break
         return failed, builder.build()
@@ -525,9 +522,9 @@ class Router(nn.Module):
             if l_i == PASS_LAYER:
                 layer_l_i = None
             else:    
-                layer_l_i = self.layer_manager.get_layer(l_i)
+                layer_l_i = self.layer_manager.get_fb(l_i)
             
-            if builder.is_valid_layer(layer_l_i, cur_depth):
+            if builder.is_valid_fb(layer_l_i, cur_depth):
                 valid_layers.append(l_i)
 
         return valid_layers
