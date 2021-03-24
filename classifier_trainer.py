@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 from sklearn.metrics import f1_score
+import math
 
 from trainer import Trainer
 from router import Router
@@ -22,7 +23,6 @@ class ClassifierTrainer(Trainer):
         self._block_trainer = BlockTrainer(self.args, self._fb_model, self.fb_optim)
                 
     def train(self):
-        total_loss = None
         critic_losses = []
         model_bce_losses = []
         test_f1_scores = []
@@ -35,20 +35,17 @@ class ClassifierTrainer(Trainer):
         action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
         
         #print("len(self.train_data)", len(self.train_data))
-        # self.train_data = self.train_data[:2048]
+        #self.train_data = self.train_data[:128]
         # self.test_data = self.test_data[:256]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
-            for i, ex in enumerate(self.train_data):
-                if i % 200 == 0:
-                    print("\nEpoch:", epoch, "Iter:", i, "\n")
-                #print(examples[0][i%self.args.batch_size:i%self.args.batch_size+1].shape)
-                print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
-                print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].shape)
+            for i in range(len(self.train_data)//self.args.batch_size):
+                if i % 32 == 0:
+                    print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
+
                 #tasks = #np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
                 task = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
-                print("task.shape", task.shape)
                 # if self.args.constraints and int(task) not in self.tasks:
                 #     continue
                 #plt.imshow(self.train_data[i % len(self.train_data)][1][0].transpose(1,2,0))
@@ -66,12 +63,8 @@ class ClassifierTrainer(Trainer):
                 # Add reward bonus
                 rewards = torch.zeros_like(torch.tensor(actions), dtype=torch.float64).cuda()
                 
-                # TODO: FIX THIS
                 if not self.args.no_reward_bonus:
-                    bonus_mask = torch.tensor(actions) != 0
-                    bonus_mask[-1] = not router_results.failed
-                    rewards[bonus_mask] += self.layer_reward_bonus(actions, bonus_mask)
-
+                    rewards += self.layer_reward_bonus(actions)
                 # Record the task architecture
                 # if epoch > 50:
                 # action_task_pair = ((task.cpu().numpy()[0], target.cpu().numpy()[0]), tuple(actions)) 
@@ -80,143 +73,124 @@ class ClassifierTrainer(Trainer):
                 # action_sets[action_task_pair] +=1
                 
                 # Train the output model
-                _, output_loss = self._block_trainer.train(img, actions, target)
+                _, output_losses = self._block_trainer.train(img, actions, target)
                 
                 
                 # Reward based on model loss
-                rewards[-1] += -output_loss
-                
-                # Reward based on decision only
-                # class_pred = int(torch.sigmoid(pred[0]) >= self.args.decision_threshold) 
-                # print(class_pred == target.cpu().numpy()[0], class_pred, target.cpu().numpy()[0])
-                # print(class_pred == target)
-                # if class_pred == target.cpu().numpy()[0]:
-                    # 
-                #     rewards[-1] += 1
-                # else:
-                #     rewards[-1] += -1
+                rewards[:, -1] += -output_losses
 
-                model_bce_losses.append(float(output_loss))
+                model_bce_losses.append(output_losses.tolist())
 
                 
                 returns, advs, tdlamret = self.compute_return(rewards, action_probs, critic_outputs)
                 #returns[:len(added_layers)] += self.layer_reward_bonus(added_layers) 
                 loss = torch.zeros(1).cuda()
-                advantage = torch.zeros_like(returns)
                 total_critic_loss = 0
-
+                total_actor_loss = 0
+                advs = (advs - advs.mean()) / advs.std()
+                #advs = torch.clamp(advs, min=-3, max=3)
+                #critic_loss = self.critic_loss_fn(critic_outputs, tdlamret) * self.args.critic_lam
+                #print("CRITIC LOSS", critic_loss)
+                
+                
                 # Compute loss
-                for t in range(len(action_probs)):
-                    critic_loss = self.critic_loss_fn(critic_outputs[t].squeeze(0), tdlamret[t]) * (1/len(critic_outputs)) * self.args.critic_lam 
-
-                    loss += critic_loss
+                for t in range(len(action_probs[0])):
+                    #critic_loss =  * (1/len(critic_outputs)) * self.args.critic_lam 
+                    critic_loss = self.critic_loss_fn(critic_outputs[:, t], tdlamret[:, t].unsqueeze(-1)) * (self.args.max_depth) * self.args.critic_lam
                     total_critic_loss += critic_loss.detach().cpu().numpy()
-                    
-                    #adv = max(min(3.0, advs[t]), -3.0)
-                    #adv = max(min(3.0, advs[t]), -3.0)
+                    loss += critic_loss
                     #loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
 
-                    delta = advs[t] - self.adv_avg[t] 
-                    #adv = (delta) / self.adv_std[t]**0.5
-                    adv = (advs[t] - self.adv_avg[t]) / self.adv_std[t]**0.5
-                    adv = max(min(3.0, adv), -3.0)
+                    # delta = advs[t] - self.adv_avg[t] 
+                    # adv = (advs[t] - self.adv_avg[t]) / self.adv_std[t]**0.5
+                    # adv = max(min(3.0, adv), -3.0)
                     
-                    self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
-                    self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
+                    # self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
+                    # self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
                     
                     # if router_results.failed and t + 1 == len(action_probs) and adv >= 0:
                     #     adv = -3
                         # returns[t] = -3
-                    loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
-                    advantage[t] = adv
-
+                    
+                    for b_i in range(self.args.batch_size):
+                        action_prob = action_probs[b_i][t][router_results.action_indices[b_i][t]]
+                        if action_prob == 0:
+                            print("action_probs", action_probs)
+                            print("action_probs[b_i][t]", action_probs[b_i][t])
+                            print(router_results.action_indices[b_i][t])
+                            print(action_prob)
+                            assert False
+                        actor_loss = -torch.log(action_prob) * advs[b_i][t] / self.args.batch_size 
+                        loss += actor_loss
+                        total_actor_loss += actor_loss.detach().cpu().numpy()
+                        action_count[actions[b_i][t]] += 1/(self.args.batch_size * self.args.max_depth)
+                        
+                        for i, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
+                            action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[b_i][t][i] 
                     # if not router_results.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
                     #     loss += action_probs[t][0][actions[t]] * 10
 
                     # Add entropy regularization
-                    loss += -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10))
+                    #loss += -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10))
 
-                    # Add load-balancing loss
-                    action_prob_sum[actions[t]] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[t][0][router_results.action_indices[t]].clone()
-                    action_count[actions[t]] += 1/(self.args.batch_size * self.args.max_depth) 
-                    
-                    #print("ACTOR LOSS", -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv)
-                    #load_balance_loss = 1000 * self._router.num_fbs * (1/(self.args.batch_size * self.args.max_depth)**2) * action_probs[t][0][router_results.action_indices[t]]
-                    #print("LOAD BALANCE LOSS", load_balance_loss)
-                    #loss += load_balance_loss
 
-                
+                #loss += critic_loss
                 critic_losses.append(total_critic_loss)
                 #print("Entropy loss", -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10)))
 
                 # Update router model
-                loss = loss / self.args.batch_size
-                loss.backward(retain_graph=True)
-                if total_loss is None:
-                    total_loss = loss
-                else:
-                    total_loss += loss
-                
-                # print("loss", loss)
-                # print("total_loss", total_loss)
-                
-                if (i + 1) % self.args.batch_size == 0:
+                # Load-balance loss
+                load_balance_loss = torch.zeros(1).cuda()
+                for j in range(len(action_prob_sum)):
+                    load_balance_loss +=  action_prob_sum[j] * action_count[j]
 
-                    # Load-balance loss
-                    load_balance_loss = torch.zeros(1).cuda()
-                    for j in range(len(action_prob_sum)):
-                         load_balance_loss += self.args.load_bal_lam * self._router.num_fbs * action_prob_sum[j] * action_count[j]
-                    load_balance_loss.backward()
+                load_balance_loss = self.args.load_bal_lam * (self._router.num_fbs * load_balance_loss - 1/self._router.num_fbs)
+                loss += load_balance_loss
+                loss.backward()
+
+                # print("\nself._router.fb_model._fbs[0].layer.weight.grad.max()", self._router.fb_model._fbs[0].layer.weight.grad.max())
+                # print("self._router.fb_model._fbs[0].layer.weight.grad.min()", self._router.fb_model._fbs[0].layer.weight.grad.min())
+                # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
+                # print("self._router.critic_out.weight.grad.min()", self._router.critic_out.weight.grad.min())
+                # print("self._router.task_embs.weight.grad.min()", self._router.task_embs.weight.grad.min())
+                # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
+                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
+                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
+                # print("self._router.trans_router.decoder._layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
+                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
+
+                torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                # Fraction of probability allocated to layer over batch
+                action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+
+                # Fraction of tasks allocated to layer over batch
+                action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+
+                if i % 8 == 0:
+                    print("CRITIC LOSS", total_critic_loss)
+                    print("TOTAL ACTOR LOSS", total_actor_loss)
                     print("load_balance_loss", load_balance_loss)
-                    #print(action_prob_sum)
-                    total_loss += load_balance_loss
-                    print("total_loss", total_loss)
-                    
-                    #print(self._router.state_encoder.fc1.weight.grad)
-                    #print("self._router.state_encoder.fc1.weight.grad.max()", self._router.state_encoder.fc1.weight.grad.max())
-                    # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
-                    # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
-                    #print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
-                    
-                    #print("self._router.att.state_W.weight.grad.max()", self._router.att.state_W.weight.grad.max())
-                    #print("self._router.att.state_W.weight.grad.max()", self._router.att.W_v.weight.grad.max())
-                    #print("self._router.task_embs.weight.grad", self._router.task_embs.weight.grad)
-                    # print("self._router.task_embs.weight.grad.norm()", self._router.task_embs.weight.grad.norm())
-                    # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
-
-                    torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
-                    #print("self._router.critic_out.weight.grad", self._router.critic_out.weight.grad)
-                    #print("self._router.state_encoder.fc1.weight.grad", self._router.state_encoder.fc1.weight.grad)
-                    #print("self._router.state_encoder.fc1.weight.grad", self._router.state_encoder.fc1.weight.grad.max())
-                    self.optimizer.step()
-                    total_loss = None
-                    self.optimizer.zero_grad()
-                    # Fraction of probability allocated to layer over batch
-                    action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-
-                    # Fraction of tasks allocated to layer over batch
-                    action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-
-                if i % 256 == 0:
-                    print("\ntask", task, " target", target)
-                    for i, action_prob in enumerate(action_probs):
+                    print("\ntask", task[0], " target", target[0])
+                    for i, action_prob in enumerate(action_probs[0]):
                         print(f"action_probs[{i}]", action_prob)
-                    print("Critic Outputs", torch.tensor(critic_outputs).cpu().numpy(), "VS", tdlamret.cpu().numpy(), advantage.detach().cpu().numpy())
-                    print("Avg ADV", self.adv_avg)
-                    print("STD ADV", self.adv_std)
+                    print("Critic Outputs", critic_outputs[0].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret.detach().cpu().numpy()[0], advs.detach().cpu().numpy()[0])
+                    # print("Avg ADV", self.adv_avg)
+                    # print("STD ADV", self.adv_std)
                     
                     # if epoch > 18 and i == 500:
                     #     state_labels = [["Task " + str(int(task)), "Encoded State"] + actions[:i] for i in range(len(actions))]
                     #     layer_ids = [list(set(range(action_probs[0].shape[1])).difference(set(actions[:i]))) for i in range(len(actions))]
-                    #     plot_attention_weights(state_labels, layer_ids, router_results.att_weights)
+                    #     plot_attention_weights(state_labels, layer_ids, srouter_results.att_weights)
+                    print(actions[0], "\n")
 
-                    print(router_results.failed, actions, "\n")
-
+            self.save()
             test_f1_score, test_acc_score = self.test_models()
             test_f1_scores.append(test_f1_score)
             test_acc_scores.append(test_acc_score)
 
-            self.save()
+
         # test_f1_score, test_acc_score = self.test_models()
         # test_f1_scores.append(test_f1_score)
         # test_acc_scores.append(test_acc_score)
@@ -278,48 +252,38 @@ class ClassifierTrainer(Trainer):
             self.args.constraints = None
 
     def test_models(self):
-        print("Testing models")
-        #for k,v in self.args.constraints.items():
-        y_trues = np.zeros(len(self.test_data))
-        y_preds = np.zeros(len(self.test_data))
-        for i, test_ex in enumerate(self.test_data): 
-            task = torch.tensor([test_ex[0]]).cuda()
-            img = torch.tensor(test_ex[1]).cuda()
-            y_trues[i] = test_ex[2]
-            #failed, model = self._router.build_fixed(v)
-            router_results = self._router(img, task, argmax=True, should_drop_layers=False)
-            # print(router_results.action_probs)
-            # print("TASK:", task)
-            # print(router_results.model)
-            # print(router_results.actions)
-            # print(test_ex[1][0].max())
-            # print(test_ex[1][0].min())
+        with torch.no_grad():
+            print("Testing models")
+            #for k,v in self.args.constraints.items():
+            y_trues = np.zeros(len(self.test_data))
+            y_preds = np.zeros(len(self.test_data))
+            np.random.shuffle(self.test_data)
+            for i in range(math.ceil(len(self.test_data)/self.args.batch_size)): 
+                task = torch.tensor(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
+                imgs = np.vstack(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
+                imgs = torch.tensor(imgs).cuda()
+                targets = self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2]
+                y_trues[i*self.args.batch_size:(i+1)*self.args.batch_size] = targets
+                #failed, model = self._router.build_fixed(v)
+                router_results = self._router(imgs, task, argmax=True, should_drop_fbs=False)
 
-            # plt.imshow(test_ex[1][0].transpose(1,2,0) * 0.3081 - 0.1307, cmap="gray")
-            # plt.show()
-            pred = torch.sigmoid(self._fb_model(img, [router_results.actions]))
-            y_preds[i] = int(pred >= self.args.decision_threshold)
-                        
-            # # Verify that the given constraints are valid
-            # assert not failed
+                # print("TASK:", task[0], "TARGETS", targets[0])
+                # print(router_results.actions[0])
+                # print(router_results.action_probs[0])
+                # for a_t in router_results.actions[0]:
+                #     print(a_t)
+                #     print(self._fb_model.get_fb(a_t))
 
-            # models[k] = model
-        
-        # Calculate the accuracy
+                # plt.imshow(imgs[0].cpu().numpy().transpose(1,2,0) * 0.3081 - 0.1307, cmap="gray")
+                # plt.show()
 
-        # for i, ex in enumerate(self.test_data):
-        #     task = ex[0]
-        #     img = torch.tensor(ex[1]).cuda()
-            
-        #     # Get predicted binary classification
-        #     pred_model = models[task](img)
-        #     pred = torch.sigmoid(models[task](img))
-        #     y_preds[i] = int(pred >= self.args.decision_threshold)
-        #     y_trues[i]  = ex[2]
-
-        test_f1_score = f1_score(y_trues, y_preds)
-        print("F1 score of testing dataset", test_f1_score)
-        test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
-        print("Accuracy of testing dataset", test_acc_score)
+                pred = torch.sigmoid(self._fb_model(imgs, router_results.actions))
+                class_preds = pred >= self.args.decision_threshold
+                y_preds[i*self.args.batch_size:(i+1)*self.args.batch_size] = class_preds.squeeze(1).cpu().numpy().astype(int)
+                            
+            test_f1_score = f1_score(y_trues, y_preds)
+            print("F1 score of testing dataset", test_f1_score)
+            test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
+            print("Accuracy of testing dataset", test_acc_score)
 
         return test_f1_score, test_acc_score

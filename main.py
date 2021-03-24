@@ -44,7 +44,7 @@ if __name__ == "__main__":
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.1,
         help="Dropout rate.")
-    parser.add_argument("--layer_drop_rate", type=float, default=0.2,
+    parser.add_argument("--fb_drop_rate", type=float, default=0.2,
         help="Layer dropout rate for router.")
     parser.add_argument("--num_dup_layers", type=int, default=4,
         help="Number of duplicate layers .")
@@ -56,9 +56,9 @@ if __name__ == "__main__":
         help="GAE lambda.")
     parser.add_argument("--entropy_lam", type=float, default=0.001,
         help="Entropy lambda.")
-    parser.add_argument("--critic_lam", type=float, default=1.0,
+    parser.add_argument("--critic_lam", type=float, default=0.5,
         help="Critic lambda.")
-    parser.add_argument("--load_bal_lam", type=float, default=0.1,
+    parser.add_argument("--load_bal_lam", type=float, default=0.05,
         help="Load-balancing lambda.")
     parser.add_argument("--train_iter", type=int, default=10000,
         help="Number of training router iterations.")

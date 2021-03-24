@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import os
 from dataclasses import dataclass
-from model_util import PASS_LAYER
+from model_util import PASS_FB
 
 class FunctionBlock(nn.Module):
     def __init__(self, layer, norm=None, act=None):
@@ -105,7 +105,7 @@ class FBModel(nn.Module):
             cur_x = x[i:i+1]
             prev_layer = None
             for t, a_t in enumerate(actions[i]):
-                if a_t != PASS_LAYER:
+                if a_t != PASS_FB:
                     cur_fb =  self.get_fb(a_t)
                     if isinstance(prev_layer, nn.Conv2d) and isinstance(cur_fb.layer, nn.Linear):
                         cur_x = torch.flatten(cur_x, start_dim=1)
