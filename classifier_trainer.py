@@ -35,8 +35,8 @@ class ClassifierTrainer(Trainer):
         action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
         
         #print("len(self.train_data)", len(self.train_data))
-        self.train_data = self.train_data[:1]
-        self.test_data = self.test_data[:1]
+        # self.train_data = self.train_data[:2048]
+        # self.test_data = self.test_data[:256]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -44,14 +44,21 @@ class ClassifierTrainer(Trainer):
                 if i % 200 == 0:
                     print("\nEpoch:", epoch, "Iter:", i, "\n")
                 #print(examples[0][i%self.args.batch_size:i%self.args.batch_size+1].shape)
-                task = torch.tensor([ex[0]]).cuda()
-                
+                print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
+                print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].shape)
+                #tasks = #np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
+                task = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
+                print("task.shape", task.shape)
                 # if self.args.constraints and int(task) not in self.tasks:
                 #     continue
                 #plt.imshow(self.train_data[i % len(self.train_data)][1][0].transpose(1,2,0))
                 #plt.show()
-                img = torch.tensor(ex[1]).cuda()
-                target = torch.tensor(ex[2], dtype=torch.float32).unsqueeze(0).cuda()
+                #self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
+                
+                #print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1].shape)
+                imgs = np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
+                img = torch.tensor(imgs).cuda()
+                target = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2].astype(int), dtype=torch.float32).unsqueeze(1).cuda()
 
                 router_results = self._router(img, task)
                 action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
@@ -67,13 +74,13 @@ class ClassifierTrainer(Trainer):
 
                 # Record the task architecture
                 # if epoch > 50:
-                action_task_pair = ((task.cpu().numpy()[0], target.cpu().numpy()[0]), tuple(actions)) 
-                if action_task_pair not in action_sets:
-                    action_sets[action_task_pair] = 0
-                action_sets[action_task_pair] +=1
+                # action_task_pair = ((task.cpu().numpy()[0], target.cpu().numpy()[0]), tuple(actions)) 
+                # if action_task_pair not in action_sets:
+                #     action_sets[action_task_pair] = 0
+                # action_sets[action_task_pair] +=1
                 
                 # Train the output model
-                _, output_loss = self._block_trainer.train(img, [actions], target)
+                _, output_loss = self._block_trainer.train(img, actions, target)
                 
                 
                 # Reward based on model loss

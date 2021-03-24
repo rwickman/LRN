@@ -5,11 +5,26 @@ from torch.distributions import Categorical
 import numpy as np
 import random
 from typing import List
+from torch.nn.utils.rnn import pad_sequence
 
 from model_util import *
-# from layer_manager import LayerManager
 from model_builder import ModelBuilder
 
+
+def create_padding_mask(valid_fbs_batch):
+    masks = torch.zeros_like(valid_fbs_batch).cuda()
+    batch_size = len(masks)
+    if len(masks[0]) <= 1:
+        return masks
+    for i in range(len(masks)):
+        mask_start = 1
+        for j in range(1, len(valid_fbs_batch[i])):
+            if valid_fbs_batch[i, j] == 0:
+                break
+            mask_start += 1
+
+        masks[i, mask_start:] = 1
+    return torch.reshape(masks, (masks.shape[0], 1, 1, masks.shape[1]))
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, args):
@@ -27,32 +42,37 @@ class MultiHeadAttention(nn.Module):
         self.mha_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
     def split_heads(self, x):
-        
-        #print("BEFORE split_heads", x.shape)
         # (batch size, num tokens,  num heads, depth)
-        x = torch.reshape(x, (1, -1, self.args.num_heads, self.depth))
+        batch_size = x.shape[0]
+        x = torch.reshape(x, (batch_size, -1, self.args.num_heads, self.depth))
         
         # (batch size, num heads, num tokens, depth)
         return x.transpose(2,1)
 
-    def forward(self, q, k, v):
+    def forward(self, q, k, v, mask=None):
+        batch_size = q.shape[0]
+
         q = self.split_heads(self.W_q(q))
         k = self.split_heads(self.W_k(k))
         v = self.split_heads(self.W_v(v))
-
+        
         qk = torch.matmul(q, k.transpose(3,2))
-
         dk = torch.tensor(q.shape[-1], dtype=torch.float32)
+        
+        scaled_att_logits = qk / torch.sqrt(dk)
 
-        att_weights = F.softmax(qk / torch.sqrt(dk), dim=-1)
+        if mask is not None:
+            scaled_att_logits += (mask * -1e9)
+            
+        att_weights = F.softmax(scaled_att_logits, dim=-1)
 
         scaled_att = torch.matmul(att_weights, v)
 
-        # (batch_size, layers+hidden+enc_state, num_heads, depth)
+        # (batch_size, fbs+hidden+enc_state, num_heads, depth)
         scaled_att = scaled_att.transpose(2,1)
 
         # Squeeze MHA together for each embedding
-        scaled_att = torch.reshape(scaled_att, (1, -1, self.args.hidden_size))
+        scaled_att = torch.reshape(scaled_att, (batch_size, -1, self.args.hidden_size))
 
         # Combine the MHA for each embedding
         out = self.mha_W(scaled_att).squeeze(0)
@@ -88,13 +108,13 @@ class EncoderLayer(nn.Module):
 
         self.dropout1 = nn.Dropout(self.args.drop_rate)
         self.dropout2 = nn.Dropout(self.args.drop_rate)
-        
+
         self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
         self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
-        
-    def forward(self, x):
+
+    def forward(self, x, mask=None):
         # Perform MHA attention
-        att_out, _ = self.mha(x, x, x)
+        att_out, _ = self.mha(x, x, x, mask)
         att_out = self.dropout1(att_out)
         mha_out = self.norm1(x + att_out)
 
@@ -123,9 +143,9 @@ class DecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
         self.norm3 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
     
-    def forward(self, x, enc_output):
-        # Preform self attention over available layers
-        att_out, att_weights1 = self.mha1(x, x, x)
+    def forward(self, x, enc_output, fb_mask=None):
+        # Preform self attention over available fbs
+        att_out, att_weights1 = self.mha1(x, x, x, fb_mask)
         att_out = self.dropout1(att_out)
         mha_out1 = self.norm1(x + att_out)
 
@@ -151,19 +171,19 @@ class Encoder(nn.Module):
     
         self.pos_enc = positional_encoding(self.args.max_pos_enc, self.args.hidden_size)
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         """
-            x: task emb, example emb, used layers embs
+            x: task emb, example emb, used fbs embs
         """
         x *= torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32)).cuda()
         x += self.pos_enc[:, :x.shape[1], :]
         x = self.dropout(x)
 
-        # Run through all encoder layer
+        # Run through all encoder fb
         for enc_layer in self.enc_layers:
-            x = enc_layer(x)
+            x = enc_layer(x, mask)
         
-        # Return output of last encoder layer
+        # Return output of last encoder fb
         return x
 
 class Decoder(nn.Module):
@@ -177,24 +197,24 @@ class Decoder(nn.Module):
         
         self.dropout = nn.Dropout(self.args.drop_rate)
     
-    def forward(self, x, enc_output):
+    def forward(self, x, enc_output, fb_mask=None):
         """Args:
-            x: Tensor of available layer embeddings.
-            enc_output: Tensor of output of last encoder layer.
+            x: Tensor of available fb embeddings.
+            enc_output: Tensor of output of last encoder fb.
         """
-        num_layers = x.shape[1]
+        num_fbs = x.shape[1]
         x *= torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
-        x += self.pos_enc[:, :num_layers, :]
+        x += self.pos_enc[:, :num_fbs, :]
         x = self.dropout(x)
         
         att_weights = {}
 
-        # Run through all decoder layers
+        # Run through all decoder fbs
         for i, dec_layer in enumerate(self.dec_layers):
-            x, att_weights1, att_weights2 = dec_layer(x, enc_output)
+            x, att_weights1, att_weights2 = dec_layer(x, enc_output, fb_mask)
 
-            att_weights['decoder_layer{}_weights1'.format(i+1)] = att_weights1
-            att_weights['decoder_layer{}_weights2'.format(i+1)] = att_weights2
+            att_weights['decoder_fb{}_weights1'.format(i+1)] = att_weights1
+            att_weights['decoder_fb{}_weights2'.format(i+1)] = att_weights2
 
         return x, att_weights
 
@@ -212,18 +232,17 @@ class TransformerRouter(nn.Module):
         self.actor_out2 = nn.Linear(16, 1)
         
 
-    def forward(self, state, layer_embs):
+    def forward(self, state, fb_embs, fb_mask=None):
         enc_output = self.encoder(state)
         
-        dec_output, att_weights = self.decoder(layer_embs, enc_output)
-        
-        # batch size, len(layer_embs)
+        dec_output, att_weights = self.decoder(fb_embs, enc_output, fb_mask)
+        # batch size, len(fb_embs)
         actor_out = self.actor_out1(dec_output)
         actor_out = self.actor_out2(actor_out).squeeze(-1)
-
-
-        layer_probs = F.softmax(actor_out, dim=-1)
-        return layer_probs, att_weights
+        if fb_mask is not None:
+            actor_out += torch.reshape(fb_mask, (fb_mask.shape[0], fb_mask.shape[-1])) * -1e9
+        fb_probs = F.softmax(actor_out, dim=-1)
+        return fb_probs, att_weights
         
 
 
@@ -238,10 +257,10 @@ class Attention(nn.Module):
         # W for encoded state
         self.state_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
-        # W for layer embeddings
-        self.layer_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        # W for fb embeddings
+        self.fb_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
-         # W for layer embeddings
+         # W for fb embeddings
         self.task_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
         self.V = nn.Linear(self.args.hidden_size, 1)
@@ -257,8 +276,8 @@ class Attention(nn.Module):
 
 
         
-    def forward(self, layer_embs, hidden_state, enc_state, task_emb):
-        inp = torch.cat((layer_embs.squeeze(0), hidden_state, enc_state, task_emb))
+    def forward(self, fb_embs, hidden_state, enc_state, task_emb):
+        inp = torch.cat((fb_embs.squeeze(0), hidden_state, enc_state, task_emb))
         mha_out, _ = self.mha(inp, inp, inp)
         mha_out = self.dropout1(mha_out)
         mha_out = self.norm1(mha_out + inp)
@@ -268,8 +287,8 @@ class Attention(nn.Module):
         out = self.norm2(pw_out + mha_out)
 
 
-        # (batch_size, num_layers, hidden_size)
-        layer_trans = self.layer_W(out[:-3])
+        # (batch_size, num_fbs, hidden_size)
+        fb_trans = self.fb_W(out[:-3])
         
         # (batch_size, hidden_size)
         hidden_trans = self.hidden_W(out[-3].unsqueeze(0)).unsqueeze(1)
@@ -278,15 +297,15 @@ class Attention(nn.Module):
 
         task_trans = self.task_W(out[-1].unsqueeze(0)).unsqueeze(1)
 
-        # (batch_size, num_layers)
-        u_i = self.V(torch.tanh(layer_trans + hidden_trans + state_trans + task_trans)).squeeze(-1)
+        # (batch_size, num_fbs)
+        u_i = self.V(torch.tanh(fb_trans + hidden_trans + state_trans + task_trans)).squeeze(-1)
     
         # Scale the output
         u_i = u_i / torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
 
-        # Predictions over layers
-        layer_probs = F.softmax(u_i, dim=-1)
-        return layer_probs
+        # Predictions over fbs
+        fb_probs = F.softmax(u_i, dim=-1)
+        return fb_probs
 
 class StateEncoder(nn.Module):
     def __init__(self, args):
@@ -302,7 +321,7 @@ class StateEncoder(nn.Module):
         self.flatten = nn.Flatten()
         self.drop1 = nn.Dropout(self.args.drop_rate)
         
-        # Compute output size of last conv layer
+        # Compute output size of last conv fb
         conv2d_out_size = conv2d_out(
             conv2d_out(self.args.img_size, 3, 1, 1),
          3, 1, 1)
@@ -341,7 +360,7 @@ class Router(nn.Module):
 
         self.trans_router = TransformerRouter(self.args)
 
-        self.layer_embs = nn.Embedding(self.num_fbs+1, self.args.hidden_size)
+        self.fb_embs = nn.Embedding(self.num_fbs+1, self.args.hidden_size)
 
         self.task_embs = nn.Embedding(self.num_tasks, self.args.hidden_size)
         
@@ -355,178 +374,155 @@ class Router(nn.Module):
         #self.att = Attention(self.args)
 
 
-    def forward(self, state, task_id, argmax=False, should_drop_layers=True):
+    def forward(self, state, task_id, argmax=False, should_drop_fbs=True):
+        batch_size = state.shape[0]
+        
         # Encode the state
         enc_state = self.state_encoder(state)
 
         # Get task embedding
         task_emb = self.task_embs(task_id)
 
-        builder = ModelBuilder(self.args)
+        builders = [ModelBuilder(self.args) for _ in range(batch_size)]
 
-        # Get layer embeddings
+        # Get fb embeddings
         # if self.args.constraints:
-        #     layer_emb_indices = self.args.constraints[int(task_id)].copy()
+        #     fb_emb_indices = self.args.constraints[int(task_id)].copy()
         # else:
-        layer_emb_indices = list(range(self.num_fbs+1))
-        # valid_layers = self._get_valid_layers(builder, layer_emb_indices)
+        fb_emb_indices = [list(range(self.num_fbs+1)) for _ in range(batch_size) ]
+        # valid_fbs = self._get_valid_fbs(builder, fb_emb_indices)
         
 
-        # Get valid layers
+        # Get valid fbs
 
         
-        #layer_embs = self.layer_embs(torch.arange(self.num_fbs+1).cuda()).unsqueeze(0)
+        #fb_embs = self.fb_embs(torch.arange(self.num_fbs+1).cuda()).unsqueeze(0)
 
         
         # h_t_router = torch.zeros(1, self.args.hidden_size).cuda()
         # c_t_router = torch.zeros(1, self.args.hidden_size).cuda()
-        layer_emb_choice = self.layer_embs(torch.tensor([PASS_LAYER]).cuda())
-        h_t_critic = torch.zeros(1, self.args.hidden_size).cuda()
-        c_t_critic = torch.zeros(1, self.args.hidden_size).cuda()
+        fb_emb_choice = self.fb_embs(torch.tensor([PASS_FB]*batch_size).cuda())
+        h_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
+        c_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
 
-        critic_outputs = []
-
-        
-
-        actions = []
-        action_indices = []
-        layer_mask = torch.zeros(self.num_fbs+1).cuda()
+        critic_outputs = torch.zeros(batch_size, self.args.max_depth).cuda()#[[] for _ in range(batch_size) ]
+        actions = [[] for _ in range(batch_size)]
+        action_indices = [[] for _ in range(batch_size)]
+        # fb_mask = torch.zeros(self.num_fbs+1).cuda()
         failed = False
         cur_loss = None
-        action_probs = []
+        action_probs = [[] for _ in range(batch_size)]
         
-        att_weights_list = []
-        state = torch.cat((enc_state, task_emb)).unsqueeze(0)
+        att_weights_list = [[] for _ in range(batch_size)]
+        state = torch.stack((enc_state, task_emb), 1)
 
         # Build the model architecture 
         for i in range(self.args.max_depth):
-            # Update the valid layers
-            valid_layers = self._get_valid_layers(builder, layer_emb_indices, i)
+            # Update the valid fbs over the batch
+            valid_fbs_batch = []
+            fb_masks_batch = []
+            max_emb_len = 0
 
-            # Perform layer dropout
-            if should_drop_layers:
-                valid_layers = self.layer_dropout(valid_layers)
+            for b_i in range(batch_size):
+                valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i)
+
+                # Perform fb dropout
+                if should_drop_fbs:
+                    valid_fbs = self.fb_dropout(valid_fbs)
+                valid_fbs_batch.append(torch.tensor(valid_fbs))
+    
             
-            # TODO: ADD EXPERT DROPOUT
-            #print("DEPTH:", i, "VALID LAYERS", valid_layers)
-            inp = torch.cat((enc_state, task_emb, layer_emb_choice), 1)
-
-            # Update inputs
-            layer_embs = self.layer_embs(torch.tensor(valid_layers).cuda()).unsqueeze(0)
+            # Add padding
             
-            #h_t_router, c_t_router = self.critic_cell(inp, (h_t_router, c_t_router))
-            #layer_probs = self.att(layer_embs, h_t_router, enc_state, task_emb)
-            layer_probs, att_weights = self.trans_router(state, layer_embs)
-            att_weights_list.append(att_weights)
+            valid_fbs_batch = pad_sequence(valid_fbs_batch, batch_first=True)
+                    
+            fb_embs = self.fb_embs(torch.tensor(valid_fbs_batch).cuda())
+            fb_masks_batch = create_padding_mask(valid_fbs_batch)          
+        
 
-            # Compute critic output 
+            fb_probs, att_weights = self.trans_router(state, fb_embs, fb_masks_batch)
+            #att_weights_list.append(att_weights)
+
+            # Compute critic output
+            inp = torch.cat((enc_state, task_emb, fb_emb_choice), 1)
             h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
             v_t = self.critic_out(F.relu(h_t_critic))
-            critic_outputs.append(v_t.squeeze(0))
+            critic_outputs[:, i] = v_t.squeeze(1)
 
-            # Choose a layers
-            if argmax:
-                layer_sample = layer_probs.argmax()
-                layer_choice = valid_layers[layer_sample]
-            else:
-                # if np.random.rand() > 0.95:
-                #     layer_choice = torch.tensor([np.random.choice(torch.where(layer_mask == 0)[0].cpu().numpy())]).cuda()
-                # else:
-                # Sample a layer
-                layer_distr = Categorical(layer_probs)
-                layer_sample = layer_distr.sample()
-                layer_choice = valid_layers[layer_sample]
             
-            # Each action needs to be associated with its index in the layer_probs
-            actions.append(layer_choice)
-            action_indices.append(layer_sample)
-            action_probs.append(layer_probs)
+            # Iterate over choices in a batch
+            fb_choices = []
+            for b_i in range(batch_size):
+                pass
+                # Choose a fbs
+                if argmax:
+                    fb_sample = fb_probs[b_i].argmax()
+                    fb_choice = valid_fbs_batch[b_i][fb_sample]
+                else:
+                    # if np.random.rand() > 0.95:
+                    #     fb_choice = torch.tensor([np.random.choice(torch.where(fb_mask == 0)[0].cpu().numpy())]).cuda()
+                    # else:
+                    # Sample a fb
+                    fb_distr = Categorical(fb_probs[b_i])
+                    fb_sample = fb_distr.sample()
+                    fb_choice = int(valid_fbs_batch[b_i][fb_sample])
+                
+                # Each action needs to be associated with its index in the fb_probs
+                actions[b_i].append(fb_choice)
+                action_indices[b_i].append(fb_sample)
+                action_probs[b_i].append(fb_probs)
+                fb_choices.append(fb_choice)
+                
+                # Remove the fb choice
+                if fb_choice != PASS_FB:
+                    fb_emb_indices[b_i].remove(fb_choice)
 
-            # Update layer input embedding choice for next input
-            layer_emb_choice = self.layer_embs(torch.tensor([layer_choice]).cuda())
+                    cur_fb = self.fb_model.get_fb(fb_choice)
+
+                    # Verify the builder did not fail
+                    assert builders[b_i].attempt_add_fb(cur_fb, i)
+
+            # Update fb input embedding choice for next input
+            fb_emb_choice = self.fb_embs(torch.tensor(fb_choices).cuda())
 
             # Setup next state
             if i +1 < self.args.max_depth:
-                chosen_layers = self.layer_embs(torch.tensor(actions).cuda())
-                state = torch.cat((enc_state, task_emb, chosen_layers)).unsqueeze(0)
-
-            # Check if constraints are violated
-            if self.args.constraints and int(layer_choice) not in self.args.constraints[int(task_id)]:
-                failed = True
-                break 
-
-            # If choice is to PASS, then skip current step
-            if layer_choice == PASS_LAYER:
-                continue
-            
-            # Verify did not choose a layer that has already been selected
-            assert layer_choice in layer_emb_indices
-            
-            cur_fb = self.fb_model.get_fb(layer_choice)
-            
-            # Verify the builder did not fail
-            assert builder.attempt_add_fb(cur_fb, i)
-
-            
-            # if not builder.attempt_add_fb(cur_fb):
-            #     # layer was not successfully added
-            #     failed = True
-            #     break 
-        
-            # Remove the layer choice
-            layer_emb_indices.remove(layer_choice)
-
+                chosen_fbs = self.fb_embs(torch.tensor(actions).cuda())
+                state = torch.stack((enc_state, task_emb), 1)
+                state = torch.cat((state, chosen_fbs), 1)
 
         return RouterResult(failed, action_probs, actions, action_indices, critic_outputs, att_weights_list) 
-    
 
-    # def build_fixed(self, layer_ids):
-    #     """Build a model given the layer IDs."""
-    #     builder = ModelBuilder(self.args)
-    #     failed = False
-    #     for layer_id in layer_ids:
-    #         cur_fb = self.fb_modelget_fb(layer_id)
-    #         if not builder.attempt_add_fb(cur_fb):
-    #             failed = True
-    #             break
-    #     return failed, builder.build()
-            
 
-    # def save_layers(self):
-    #     self.layer_manager.save()
-    
-    # def load_layers(self):
-    #     self.layer_manager.load()
-
-    def _get_valid_layers(self, builder, layer_emb_indices, cur_depth):
-        # Update the valid layers
-        valid_layers = []
-        for l_i in layer_emb_indices:
-            if l_i == PASS_LAYER:
-                layer_l_i = None
+    def _get_valid_fbs(self, builder, fb_emb_indices, cur_depth):
+        # Update the valid fbs
+        valid_fbs = []
+        for l_i in fb_emb_indices:
+            if l_i == PASS_FB:
+                fb_l_i = None
             else:    
-                layer_l_i = self.fb_model.get_fb(l_i)
+                fb_l_i = self.fb_model.get_fb(l_i)
             
-            if builder.is_valid_fb(layer_l_i, cur_depth):
-                valid_layers.append(l_i)
+            if builder.is_valid_fb(fb_l_i, cur_depth):
+                valid_fbs.append(l_i)
 
-        return valid_layers
+        return valid_fbs
     
-    def layer_dropout(self, valid_layers):
-        if len(valid_layers) == 1:
-            # Require at least one layer
-            return valid_layers
+    def fb_dropout(self, valid_fbs):
+        if len(valid_fbs) == 1:
+            # Require at least one fb
+            return valid_fbs
 
-        nondropped_layers = []
-        for i in range(len(valid_layers)):
+        nondropped_fbs = []
+        for i in range(len(valid_fbs)):
 
-            if random.random() >= self.args.layer_drop_rate:
-                nondropped_layers.append(valid_layers[i])
+            if random.random() >= self.args.fb_drop_rate:
+                nondropped_fbs.append(valid_fbs[i])
         
-        if len(nondropped_layers) == 0:
-            # Add random layer if all the layers were dropped
-            nondropped_layers.append(random.choice(valid_layers))
+        if len(nondropped_fbs) == 0:
+            # Add random fb if all the fbs were dropped
+            nondropped_fbs.append(random.choice(valid_fbs))
 
-        return nondropped_layers
+        return nondropped_fbs
                 
         
