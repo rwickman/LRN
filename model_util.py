@@ -14,8 +14,9 @@ class RouterResult:
     action_indices: List[int]
     critic_outputs: List[torch.Tensor]
     att_weights: List[Dict[str, torch.Tensor]]
+    valid_fbs_ep: List[List[int]]
 
-PASS_LAYER = 0
+PASS_FB = 0
 
 def conv2d_out(inp_size, kernel_size, stride, padding=0):
     # W - F + 2P / S + 1

@@ -14,8 +14,8 @@ from model_builder import ModelBuilder
 def create_padding_mask(valid_fbs_batch):
     masks = torch.zeros_like(valid_fbs_batch).cuda()
     batch_size = len(masks)
-    if len(masks[0]) <= 1:
-        return masks
+    # if len(masks[0]) > 1:
+    #     return masks
     for i in range(len(masks)):
         mask_start = 1
         for j in range(1, len(valid_fbs_batch[i])):
@@ -60,8 +60,14 @@ class MultiHeadAttention(nn.Module):
         dk = torch.tensor(q.shape[-1], dtype=torch.float32)
         
         scaled_att_logits = qk / torch.sqrt(dk)
-
         if mask is not None:
+            # print("q.shape", q.shape)
+            # print("k.shape", k.shape)
+            # print("qk.shape", qk.shape)
+            # print("scaled_att_logits.shape", scaled_att_logits.shape)
+            # print("mask.shape", mask.shape)
+            # print(mask)
+
             scaled_att_logits += (mask * -1e9)
             
         att_weights = F.softmax(scaled_att_logits, dim=-1)
@@ -405,7 +411,7 @@ class Router(nn.Module):
         h_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
         c_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
 
-        critic_outputs = torch.zeros(batch_size, self.args.max_depth).cuda()#[[] for _ in range(batch_size) ]
+        critic_outputs = torch.zeros(batch_size, self.args.max_depth, 1).cuda()#[[] for _ in range(batch_size) ]
         actions = [[] for _ in range(batch_size)]
         action_indices = [[] for _ in range(batch_size)]
         # fb_mask = torch.zeros(self.num_fbs+1).cuda()
@@ -415,6 +421,7 @@ class Router(nn.Module):
         
         att_weights_list = [[] for _ in range(batch_size)]
         state = torch.stack((enc_state, task_emb), 1)
+        valid_fbs_ep = [[] for _ in range(batch_size)]
 
         # Build the model architecture 
         for i in range(self.args.max_depth):
@@ -430,14 +437,14 @@ class Router(nn.Module):
                 if should_drop_fbs:
                     valid_fbs = self.fb_dropout(valid_fbs)
                 valid_fbs_batch.append(torch.tensor(valid_fbs))
+                valid_fbs_ep[b_i].append(valid_fbs)
     
             
             # Add padding
-            
             valid_fbs_batch = pad_sequence(valid_fbs_batch, batch_first=True)
                     
-            fb_embs = self.fb_embs(torch.tensor(valid_fbs_batch).cuda())
-            fb_masks_batch = create_padding_mask(valid_fbs_batch)          
+            fb_embs = self.fb_embs(valid_fbs_batch.cuda())
+            fb_masks_batch = create_padding_mask(valid_fbs_batch)   
         
 
             fb_probs, att_weights = self.trans_router(state, fb_embs, fb_masks_batch)
@@ -447,7 +454,7 @@ class Router(nn.Module):
             inp = torch.cat((enc_state, task_emb, fb_emb_choice), 1)
             h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
             v_t = self.critic_out(F.relu(h_t_critic))
-            critic_outputs[:, i] = v_t.squeeze(1)
+            critic_outputs[:, i] = v_t
 
             
             # Iterate over choices in a batch
@@ -466,11 +473,12 @@ class Router(nn.Module):
                     fb_distr = Categorical(fb_probs[b_i])
                     fb_sample = fb_distr.sample()
                     fb_choice = int(valid_fbs_batch[b_i][fb_sample])
+                    assert fb_probs[b_i][fb_sample] != 0
                 
                 # Each action needs to be associated with its index in the fb_probs
                 actions[b_i].append(fb_choice)
                 action_indices[b_i].append(fb_sample)
-                action_probs[b_i].append(fb_probs)
+                action_probs[b_i].append(fb_probs[b_i])
                 fb_choices.append(fb_choice)
                 
                 # Remove the fb choice
@@ -491,7 +499,7 @@ class Router(nn.Module):
                 state = torch.stack((enc_state, task_emb), 1)
                 state = torch.cat((state, chosen_fbs), 1)
 
-        return RouterResult(failed, action_probs, actions, action_indices, critic_outputs, att_weights_list) 
+        return RouterResult(failed, action_probs, actions, action_indices, critic_outputs, att_weights_list, valid_fbs_ep) 
 
 
     def _get_valid_fbs(self, builder, fb_emb_indices, cur_depth):

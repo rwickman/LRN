@@ -33,36 +33,37 @@ class Trainer(ABC):
     def compute_return(self, rewards, action_probs, critic_outputs):
         returns = torch.zeros_like(rewards, dtype=torch.float32).cuda()
         adv = torch.zeros_like(rewards, dtype=torch.float32).cuda()
-        T = len(returns)
+        T = len(returns[0])
         for t in reversed(range(T)):
             if t == T - 1:
-                returns[t] = rewards[t]
-                adv[t] = returns[t] -  critic_outputs[t].detach()
+                returns[:, t] = rewards[:, t]
+                adv[:, t] = returns[:, t] -  critic_outputs[:, t, 0].detach()
             else:
-                returns[t] = rewards[t] + self.args.gamma * returns[t+1]
+                returns[:, t] = rewards[:, t] + self.args.gamma * returns[:, t+1]
 
                 # TD Residual
-                delta = rewards[t] + self.args.gamma * critic_outputs[t+1].detach() -  critic_outputs[t].detach()
+                delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1, 0].detach() -  critic_outputs[:, t, 0].detach()
                 
                 # GAE
-                adv[t] = delta + self.args.gamma * self.args.gae_lam * adv[t+1]
+                adv[:, t] = delta + self.args.gamma * self.args.gae_lam * adv[:, t+1]
                 #adv[t] = returns[t] - critic_outputs[t].detach()
         
-        tdlamret = adv + torch.tensor(critic_outputs).cuda() 
+        tdlamret = adv + critic_outputs[:, :, 0].detach()
         return returns, adv, tdlamret
 
-    def layer_reward_bonus(self, actions, bonus_mask):
-        bonus = torch.zeros(torch.sum(bonus_mask)).cuda()
-        b_i = 0
-        for i in range(len(bonus)):
-            if bool(bonus_mask[i]):
-                if actions[i] not in self._layer_count:
-                    self._layer_count[actions[i]] = 0
-                bonus[b_i] += (1 / np.log(self._layer_count[actions[i]] + 2))
-                
-                #bonus[b_i] += 1 / (self._layer_count[actions[i]] + 1)
-                b_i += 1
-                self._layer_count[actions[i]] += 1
+    def layer_reward_bonus(self, actions):
+        batch_size = len(actions)
+        depth = len(actions[0])
+        bonus = torch.zeros((batch_size, depth)).cuda()
+        for i in range(batch_size):
+            for j in range(depth):
+                if actions[i][j] not in self._layer_count:
+                    self._layer_count[actions[i][j]] = 0
+                bonus[i][j] += (1 / np.log(self._layer_count[actions[i][j]] + 2))
+                    
+                #bonus[i][j] += 1 / (self._layer_count[actions[i][j]] + 1)
+                self._layer_count[actions[i][j]] += 1
+        #print(bonus)
         return bonus
 
     def save(self):
