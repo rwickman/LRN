@@ -27,12 +27,6 @@ class ClassifierTrainer(Trainer):
         model_bce_losses = []
         test_f1_scores = []
         test_acc_scores = []
-
-        # Fraction of probability allocated to layer over batch
-        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-
-        # Fraction of tasks allocated to layer over batch
-        action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
         
         #print("len(self.train_data)", len(self.train_data))
         #self.train_data = self.train_data[:128]
@@ -41,9 +35,7 @@ class ClassifierTrainer(Trainer):
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
             for i in range(len(self.train_data)//self.args.batch_size):
-                if i % 32 == 0:
-                    print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
-
+                #print("i", i)                
                 #tasks = #np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
                 task = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
                 # if self.args.constraints and int(task) not in self.tasks:
@@ -87,17 +79,23 @@ class ClassifierTrainer(Trainer):
                 loss = torch.zeros(1).cuda()
                 total_critic_loss = 0
                 total_actor_loss = 0
+                #total_enp_loss = 0
                 advs = (advs - advs.mean()) / advs.std()
                 #advs = torch.clamp(advs, min=-3, max=3)
                 #critic_loss = self.critic_loss_fn(critic_outputs, tdlamret) * self.args.critic_lam
                 #print("CRITIC LOSS", critic_loss)
                 
-                
+                # Fraction of probability allocated to layer over batch
+                action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+
+                # Fraction of tasks allocated to layer over batch
+                action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
                 # Compute loss
                 for t in range(len(action_probs[0])):
                     #critic_loss =  * (1/len(critic_outputs)) * self.args.critic_lam 
                     critic_loss = self.critic_loss_fn(critic_outputs[:, t], tdlamret[:, t].unsqueeze(-1)) * (self.args.max_depth) * self.args.critic_lam
                     total_critic_loss += critic_loss.detach().cpu().numpy()
+                    
                     loss += critic_loss
                     #loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
 
@@ -125,13 +123,18 @@ class ClassifierTrainer(Trainer):
                         total_actor_loss += actor_loss.detach().cpu().numpy()
                         action_count[actions[b_i][t]] += 1/(self.args.batch_size * self.args.max_depth)
                         
-                        for i, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
-                            action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[b_i][t][i] 
+                        #enp_loss = -self.args.entropy_lam * action_prob * torch.log(action_prob +1e-10) / self.args.batch_size
+                        #total_enp_loss += enp_loss
+                        #loss += enp_loss
+                
+                        for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
+                            action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[b_i][t][j]
+                        
                     # if not router_results.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
                     #     loss += action_probs[t][0][actions[t]] * 10
 
                     # Add entropy regularization
-                    #loss += -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10))
+                    
 
 
                 #loss += critic_loss
@@ -154,27 +157,25 @@ class ClassifierTrainer(Trainer):
                 # print("self._router.critic_out.weight.grad.min()", self._router.critic_out.weight.grad.min())
                 # print("self._router.task_embs.weight.grad.min()", self._router.task_embs.weight.grad.min())
                 # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
-                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
-                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
+                #print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
+                #print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
                 # print("self._router.trans_router.decoder._layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
                 # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
 
                 torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
-                # Fraction of probability allocated to layer over batch
-                action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
-                # Fraction of tasks allocated to layer over batch
-                action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
-                if i % 8 == 0:
+                if i % 16 == 0:
+                    print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
+                    # print("TOTAL ENP LOSS", total_enp_loss)
                     print("CRITIC LOSS", total_critic_loss)
                     print("TOTAL ACTOR LOSS", total_actor_loss)
                     print("load_balance_loss", load_balance_loss)
                     print("\ntask", task[0], " target", target[0])
-                    for i, action_prob in enumerate(action_probs[0]):
-                        print(f"action_probs[{i}]", action_prob)
+                    for j, action_prob in enumerate(action_probs[0]):
+                        print(f"action_probs[{j}]", action_prob)
                     print("Critic Outputs", critic_outputs[0].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret.detach().cpu().numpy()[0], advs.detach().cpu().numpy()[0])
                     # print("Avg ADV", self.adv_avg)
                     # print("STD ADV", self.adv_std)
