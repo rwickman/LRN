@@ -66,7 +66,7 @@ class Trainer(ABC):
         #print(bonus)
         return bonus
 
-    def save(self):
+    def save(self, test_results=None):
         print("Saving models")
         model_dict = {
             "router" : self._router.state_dict(),
@@ -80,6 +80,9 @@ class Trainer(ABC):
         if not os.path.exists(self.args.save_dir):
             os.mkdir(self.args.save_dir)
         torch.save(model_dict, os.path.join(self.args.save_dir, "router.pt"))
+        if test_results is not None:
+            with open(os.path.join(self.args.save_dir, self.args.test_results), "w") as f:
+                json.dump(test_results, f)
 
     def load(self):
         #self._router.load_state_dict(torch.load(os.path.join(self.args.save_dir, "router.pt")))
@@ -92,6 +95,3 @@ class Trainer(ABC):
         self.adv_avg = model_dict["adv_avg"]
         self.adv_std = model_dict["adv_std"] 
 
-    def save_results(self, train_results):
-        with open(self.args.results, "w") as f:
-            json.dump(train_results, f)

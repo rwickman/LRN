@@ -25,12 +25,16 @@ class ClassifierTrainer(Trainer):
     def train(self):
         critic_losses = []
         model_bce_losses = []
-        test_f1_scores = []
-        test_acc_scores = []
+        #test_f1_scores = []
+        #test_acc_scores = []
+        test_results = {
+            "test_f1_scores" : [],
+            "test_acc_scores" : [],
+        }
         
         #print("len(self.train_data)", len(self.train_data))
-        #self.train_data = self.train_data[:128]
-        # self.test_data = self.test_data[:256]
+        self.train_data = self.train_data[:2048]
+        self.test_data = self.test_data[:256]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -186,44 +190,39 @@ class ClassifierTrainer(Trainer):
                     #     plot_attention_weights(state_labels, layer_ids, srouter_results.att_weights)
                     print(actions[0], "\n")
 
-            self.save()
             test_f1_score, test_acc_score = self.test_models()
-            test_f1_scores.append(test_f1_score)
-            test_acc_scores.append(test_acc_score)
-
-
-        # test_f1_score, test_acc_score = self.test_models()
-        # test_f1_scores.append(test_f1_score)
-        # test_acc_scores.append(test_acc_score)
+            test_results["test_f1_scores"].append(test_f1_score)
+            test_results["test_acc_scores"].append(test_acc_score)
+            self.save(test_results)
 
         for pair in sorted(list(action_sets.items()), key=lambda a: a[1]):
             print(pair)
         
-        train_results = {
-            "critic_losses" : critic_losses,
-            "model_bce_losses" : model_bce_losses,
-            "test_f1_scores" :test_f1_scores,
-            "test_acc_scores" : test_acc_scores,
-            "epochs" : self.args.epochs,
-            "constraints" : self.args.constraints
-        }
+
+
+        # train_results = {
+        #     "critic_losses" : critic_losses,
+        #     "model_bce_losses" : model_bce_losses,
+        #     "epochs" : self.args.epochs,
+        #     "constraints" : self.args.constraints
+        # }
             
 
-        fig, axes = plt.subplots(4)
-        axes[0].plot(critic_losses)
-        axes[0].set_title("Critic Loss")
-        axes[1].plot(model_bce_losses)
-        axes[1].set_title("BCE Loss")
-        axes[2].plot(test_f1_scores)
-        axes[2].set_title("Test F1 Score")
+        # fig, axes = plt.subplots(4)
+        # axes[0].plot(critic_losses)
+        # axes[0].set_title("Critic Loss")
+        # axes[1].plot(model_bce_losses)
+        # axes[1].set_title("BCE Loss")
+        # axes[2].plot(test_f1_scores)
+        # axes[2].set_title("Test F1 Score")
 
-        axes[3].plot(test_acc_scores)
-        axes[3].set_title("Test Accuracy")
+        # axes[3].plot(test_acc_scores)
+        # axes[3].set_title("Test Accuracy")
 
 
-        plt.show()
-        self.save()
-        self.save_results(train_results)
+        # plt.show()
+        # self.save()
+        
         
 
     def load_balance_loss(self):

@@ -84,6 +84,8 @@ if __name__ == "__main__":
         help="Don't use a reward bonus.")
     parser.add_argument("--results", default="results.json",
         help="File to save JSON results.")
+    parser.add_argument("--test_results", default="results.json",
+        help="File to save JSON test results.")
     parser.add_argument("--run_mnist_benchmarks", action="store_true",
         help="Run MNIST benchmarks.")
 
