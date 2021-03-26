@@ -3,24 +3,39 @@ import torchvision
 import numpy as np
 import argparse, os
 from tqdm import tqdm
-train_loader = torch.utils.data.DataLoader(
-  torchvision.datasets.MNIST('./data', train=True, download=True,
-                             transform=torchvision.transforms.Compose([
-                               torchvision.transforms.ToTensor(),
-                               torchvision.transforms.Normalize(
-                                 (0.1307,), (0.3081,))
-                             ])),
-  batch_size=1, shuffle=True)
 
-test_loader = torch.utils.data.DataLoader(
-  torchvision.datasets.MNIST('./data', train=False, download=True,
-                             transform=torchvision.transforms.Compose([
-                               torchvision.transforms.ToTensor(),
-                               torchvision.transforms.Normalize(
-                                 (0.1307,), (0.3081,))
-                             ])),
-  batch_size=1, shuffle=True)
 
+
+
+
+def load_datasets(args):
+
+  if args.dataset.lower() == "mnist":
+    train_dataset = torchvision.datasets.MNIST('./data', train=True, download=True,
+                              transform=torchvision.transforms.Compose([
+                                torchvision.transforms.ToTensor()
+                              ]))
+    test_dataset = torchvision.datasets.MNIST('./data', train=False, download=True,
+                              transform=torchvision.transforms.Compose([
+                                torchvision.transforms.ToTensor()
+                              ]))
+  elif args.dataset.lower() == "cifar":
+    train_dataset = torchvision.datasets.CIFAR100('./data', train=True, download=True,
+                              transform=torchvision.transforms.Compose([
+                                torchvision.transforms.ToTensor()
+                              ]))
+    test_dataset = torchvision.datasets.CIFAR100('./data', train=False, download=True,
+                              transform=torchvision.transforms.Compose([
+                                torchvision.transforms.ToTensor()
+                              ]))
+
+  train_loader = torch.utils.data.DataLoader(
+    train_dataset, batch_size=1, shuffle=True)
+
+  test_loader = torch.utils.data.DataLoader(
+    test_dataset, batch_size=1, shuffle=True)
+  
+  return train_loader, test_loader
 
 # num:
     # example, target (0 or 1)
@@ -28,8 +43,40 @@ test_loader = torch.utils.data.DataLoader(
 # For each number 0-9 need 1k positive classes and 1k for each other numbers
 # EX: 0 needs 1k positive and 1k 9 negative, 1k 8 negative, ..., 1k 1 negative 
 
-def create_datasets(args):
+# FOR CIFAR-100 you will have
 
+def normalize(img):
+  return img / 127.5 - 1
+
+
+def create_cifar_dataset(args):
+  train_loader, test_loader = load_datasets(args)
+  
+  # Create training data
+  with open(args.out_train, "wb") as f:
+    for img, target in tqdm(train_loader):
+      target = target.numpy()
+      # Create course label task
+      task = target // 5
+      # Create fine label relative to task
+      label = target % 5
+      ex = int(task), img.numpy(), int(label)
+      np.save(f, ex)
+  
+  # Create testing data
+  with open(args.out_test, "wb") as f:
+    for img, target in tqdm(test_loader):
+      target = target.numpy()
+      # Create course label task
+      task = target // 5
+      # Create fine label relative to task
+      label = target % 5
+
+      ex = int(task), img.numpy(), int(label)
+      np.save(f, ex)
+
+def create_mnist_dataset(args):
+  train_loader, test_loader = load_datasets(args)
   train_count = {}
   test_count = {}
   for task in args.tasks:
@@ -40,8 +87,6 @@ def create_datasets(args):
       train_count[task][j] = 0
       test_count[task][j] = 0
 
-  MAX_EXAMPLES = 200
-  done = True
   with open(args.out_train, "wb") as f:
     for img, target in tqdm(train_loader):
         target = target.numpy()[0]
@@ -70,8 +115,12 @@ def create_datasets(args):
 #   print(out.shape)
 
 def main(args):
-  create_datasets(args)
-
+  if args.dataset == "mnist":
+    create_mnist_dataset(args)
+  elif args.dataset == "cifar":
+    create_cifar_dataset(args)
+  else:
+    raise Exception("Invalid dataset.")
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
@@ -85,5 +134,8 @@ if __name__ == "__main__":
       help="Output train npy file.")
   parser.add_argument("--out_test", default="mnist-mtl-test.npy",
       help="Output test npy file.")
+
+  parser.add_argument("--dataset", default="mnist",
+      help="Dataset type (e.g., mnist or cifar).")
 
   main(parser.parse_args())
