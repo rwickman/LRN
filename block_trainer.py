@@ -5,7 +5,12 @@ class BlockTrainer:
     """Trainer for output model of Unrestricted Routing Network."""
     def __init__(self, args, fb_model, fb_optim):
         self.args = args
-        self.bce_loss_fn = nn.BCEWithLogitsLoss()
+        if self.args.num_classes == 1:
+
+            self.bce_loss_fn = nn.BCEWithLogitsLoss()
+        else:
+            self.loss_fn = nn.CrossEntropyLoss()
+        
         self._fb_model = fb_model
         self.fb_optim = fb_optim
 
@@ -16,7 +21,7 @@ class BlockTrainer:
         total_bce_loss = torch.zeros(1).cuda()
         output_losses = torch.zeros(batch_size).cuda()
         for i in range(batch_size):
-            output_loss = self.bce_loss_fn(pred[i], target[i])
+            output_loss = self.loss_fn(pred[i].unsqueeze(0), target[i])
             output_losses[i] = output_loss.detach()
             total_bce_loss += output_loss
         #print("MODEL LOSS: ", loss, "pred", torch.sigmoid(pred)[0].detach().cpu().numpy()[0], "vs", target.cpu().numpy()[0])

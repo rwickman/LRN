@@ -31,10 +31,10 @@ class ClassifierTrainer(Trainer):
             "test_f1_scores" : [],
             "test_acc_scores" : [],
         }
-        
+
         #print("len(self.train_data)", len(self.train_data))
-        self.train_data = self.train_data[:2048]
-        self.test_data = self.test_data[:256]
+        # self.train_data = self.train_data[:4096]
+        # self.test_data = self.test_data[:1024]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -51,7 +51,7 @@ class ClassifierTrainer(Trainer):
                 #print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1].shape)
                 imgs = np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
                 img = torch.tensor(imgs).cuda()
-                target = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2].astype(int), dtype=torch.float32).unsqueeze(1).cuda()
+                target = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2].astype(int), dtype=torch.int64).unsqueeze(1).cuda()
 
                 router_results = self._router(img, task)
                 action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
@@ -171,7 +171,7 @@ class ClassifierTrainer(Trainer):
                 self.optimizer.zero_grad()
 
 
-                if i % 16 == 0:
+                if i % 8 == 0:
                     print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
                     # print("TOTAL ENP LOSS", total_enp_loss)
                     print("CRITIC LOSS", total_critic_loss)
@@ -276,14 +276,29 @@ class ClassifierTrainer(Trainer):
 
                 # plt.imshow(imgs[0].cpu().numpy().transpose(1,2,0) * 0.3081 - 0.1307, cmap="gray")
                 # plt.show()
+                pred = self._fb_model(imgs, router_results.actions)
+                if self.args.num_classes == 1:
+                    pred = torch.sigmoid(pred)
+                    class_preds = pred >= self.args.decision_threshold
+                    class_preds = class_preds.squeeze(1).cpu().numpy().astype(int)
+                else:
+                    class_preds = torch.argmax(pred)
+                    class_preds = class_preds.cpu().numpy().astype(int)
 
-                pred = torch.sigmoid(self._fb_model(imgs, router_results.actions))
-                class_preds = pred >= self.args.decision_threshold
-                y_preds[i*self.args.batch_size:(i+1)*self.args.batch_size] = class_preds.squeeze(1).cpu().numpy().astype(int)
-                            
-            test_f1_score = f1_score(y_trues, y_preds)
-            print("F1 score of testing dataset", test_f1_score)
-            test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
-            print("Accuracy of testing dataset", test_acc_score)
+                
+                y_preds[i*self.args.batch_size:(i+1)*self.args.batch_size] =class_preds 
+
+
+            if self.args.num_classes == 1:
+
+                test_f1_score = f1_score(y_trues, y_preds)
+                print("F1 score of testing dataset", test_f1_score)
+                test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
+                print("Accuracy of testing dataset", test_acc_score)
+            else:
+                test_f1_score = f1_score(y_trues, y_preds, average="macro")
+                print("F1 score of testing dataset", test_f1_score)
+                test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
+                print("Accuracy of testing dataset", test_acc_score)
 
         return test_f1_score, test_acc_score
