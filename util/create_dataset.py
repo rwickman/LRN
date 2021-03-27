@@ -51,7 +51,6 @@ def normalize(img):
 
 def create_cifar_dataset(args):
   train_loader, test_loader = load_datasets(args)
-  
   # Create training data
   with open(args.out_train, "wb") as f:
     for img, target in tqdm(train_loader):
@@ -60,7 +59,7 @@ def create_cifar_dataset(args):
       task = target // 5
       # Create fine label relative to task
       label = target % 5
-      ex = int(task), img.numpy(), int(label)
+      ex = int(task), img.numpy(), np.array(label)
       np.save(f, ex)
   
   # Create testing data
@@ -72,7 +71,7 @@ def create_cifar_dataset(args):
       # Create fine label relative to task
       label = target % 5
 
-      ex = int(task), img.numpy(), int(label)
+      ex = int(task), img.numpy(), np.array(label)
       np.save(f, ex)
 
 def create_mnist_dataset(args):
