@@ -24,6 +24,13 @@ class Trainer(ABC):
         self._layer_count = {}
         if self.args.load:
             self.load()
+        else:
+            self.test_results = {
+                "test_f1_scores" : [],
+                "test_acc_scores" : [],
+                "load_bal_loss" : []
+            }
+
 
     @abstractmethod
     def train(self):
@@ -66,7 +73,7 @@ class Trainer(ABC):
         #print(bonus)
         return bonus
 
-    def save(self, test_results=None):
+    def save(self):
         print("Saving models")
         model_dict = {
             "router" : self._router.state_dict(),
@@ -80,9 +87,9 @@ class Trainer(ABC):
         if not os.path.exists(self.args.save_dir):
             os.mkdir(self.args.save_dir)
         torch.save(model_dict, os.path.join(self.args.save_dir, "router.pt"))
-        if test_results is not None:
-            with open(os.path.join(self.args.save_dir, self.args.test_results), "w") as f:
-                json.dump(test_results, f)
+    
+        with open(os.path.join(self.args.save_dir, self.args.test_results), "w") as f:
+            json.dump(self.test_results, f)
 
     def load(self):
         #self._router.load_state_dict(torch.load(os.path.join(self.args.save_dir, "router.pt")))
@@ -93,5 +100,9 @@ class Trainer(ABC):
 
         self.optimizer.load_state_dict(model_dict["optimizer"])
         self.adv_avg = model_dict["adv_avg"]
-        self.adv_std = model_dict["adv_std"] 
+        self.adv_std = model_dict["adv_std"]
+
+        self.test_results = {}
+        with open(os.path.join(self.args.save_dir, self.args.test_results), "r") as f:
+            self.test_results = json.load(f)
 

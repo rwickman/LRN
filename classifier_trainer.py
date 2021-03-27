@@ -27,14 +27,10 @@ class ClassifierTrainer(Trainer):
         model_bce_losses = []
         #test_f1_scores = []
         #test_acc_scores = []
-        test_results = {
-            "test_f1_scores" : [],
-            "test_acc_scores" : [],
-        }
 
         #print("len(self.train_data)", len(self.train_data))
-        # self.train_data = self.train_data[:4096]
-        # self.test_data = self.test_data[:1024]
+        # self.train_data = self.train_data[:2048]
+        # self.test_data = self.test_data[:2048]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -125,15 +121,13 @@ class ClassifierTrainer(Trainer):
                         actor_loss = -torch.log(action_prob) * advs[b_i][t] / self.args.batch_size 
                         loss += actor_loss
                         total_actor_loss += actor_loss.detach().cpu().numpy()
-                        action_count[actions[b_i][t]] += 1/(self.args.batch_size * self.args.max_depth)
-                        
-                        #enp_loss = -self.args.entropy_lam * action_prob * torch.log(action_prob +1e-10) / self.args.batch_size
-                        #total_enp_loss += enp_loss
-                        #loss += enp_loss
-                
+
+                        action_count[actions[b_i][t]] += 1
                         for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
                             action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[b_i][t][j]
-                        
+                        #enp_loss = -self.args.entropy_lam * action_prob * torch.log(action_prob +1e-10) / self.args.batch_size
+                        #total_enp_loss += enp_loss
+                        #loss += enp_loss                       
                     # if not router_results.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
                     #     loss += action_probs[t][0][actions[t]] * 10
 
@@ -147,11 +141,7 @@ class ClassifierTrainer(Trainer):
 
                 # Update router model
                 # Load-balance loss
-                load_balance_loss = torch.zeros(1).cuda()
-                for j in range(len(action_prob_sum)):
-                    load_balance_loss +=  action_prob_sum[j] * action_count[j]
-
-                load_balance_loss = self.args.load_bal_lam * (self._router.num_fbs * load_balance_loss - 1/self._router.num_fbs)
+                load_balance_loss = self.args.load_bal_lam * self.compute_load_balance_loss(action_prob_sum, action_count) 
                 loss += load_balance_loss
                 loss.backward()
 
@@ -159,12 +149,13 @@ class ClassifierTrainer(Trainer):
                 # print("self._router.fb_model._fbs[0].layer.weight.grad.min()", self._router.fb_model._fbs[0].layer.weight.grad.min())
                 # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
                 # print("self._router.critic_out.weight.grad.min()", self._router.critic_out.weight.grad.min())
-                # print("self._router.task_embs.weight.grad.min()", self._router.task_embs.weight.grad.min())
-                # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
-                #print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
-                #print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
-                # print("self._router.trans_router.decoder._layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
+                #print("BEFORE: self._router.task_embs.weight.grad.min()", self._router.task_embs.weight.grad.min())
+                #print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
+                #print("self._router.task_embs.weight.grad.norm()", self._router.task_embs.weight.grad.norm())
+                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
                 # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
+                # print("self._router.trans_router.decoder._layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.max())
+                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.min())
 
                 torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
                 self.optimizer.step()
@@ -190,10 +181,12 @@ class ClassifierTrainer(Trainer):
                     #     plot_attention_weights(state_labels, layer_ids, srouter_results.att_weights)
                     print(actions[0], "\n")
 
-            test_f1_score, test_acc_score = self.test_models()
-            test_results["test_f1_scores"].append(test_f1_score)
-            test_results["test_acc_scores"].append(test_acc_score)
-            self.save(test_results)
+            test_f1_score, test_acc_score, load_bal_loss = self.test_models()
+            self.test_results["test_f1_scores"].append(test_f1_score)
+            self.test_results["test_acc_scores"].append(test_acc_score)
+            self.test_results["load_bal_loss"].append(load_bal_loss)
+
+            self.save()
 
         for pair in sorted(list(action_sets.items()), key=lambda a: a[1]):
             print(pair)
@@ -225,14 +218,14 @@ class ClassifierTrainer(Trainer):
         
         
 
-    def load_balance_loss(self):
-        # Max over actions
-        #(torch.tensor(action_probs))
-        # Keep count of actions per layer
-        # When Batch is done:
-        #   Compute action distribution for each layer
-        #   PROBLEM: the distribution will not reflect what layers are actually possiblly
-        pass
+    def compute_load_balance_loss(self, action_prob_sum, action_count):
+        load_balance_loss = torch.zeros(1).cuda()
+        for j in range(len(action_prob_sum)):
+            load_balance_loss +=  action_prob_sum[j] * action_count[j] * (1/(self.args.batch_size * self.args.max_depth))
+
+        load_balance_loss = (self._router.num_fbs * load_balance_loss - 1/self._router.num_fbs)
+        
+        return load_balance_loss
 
     def load_data(self):
         self._data_loader = DataLoader(self.args)
@@ -251,46 +244,50 @@ class ClassifierTrainer(Trainer):
         else:
             self.args.constraints = None
 
+
     def test_models(self):
+        self._router.eval()
+        self._fb_model.eval()
         with torch.no_grad():
+            action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+            action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+                
             print("Testing models")
             #for k,v in self.args.constraints.items():
             y_trues = np.zeros(len(self.test_data))
             y_preds = np.zeros(len(self.test_data))
             np.random.shuffle(self.test_data)
             for i in range(math.ceil(len(self.test_data)/self.args.batch_size)): 
-                task = torch.tensor(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
+                task= torch.tensor(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
                 imgs = np.vstack(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
                 imgs = torch.tensor(imgs).cuda()
                 targets = self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2]
+                print("task[0]", task[0], "targets[0]", targets[0])
                 y_trues[i*self.args.batch_size:(i+1)*self.args.batch_size] = targets
-                #failed, model = self._router.build_fixed(v)
                 router_results = self._router(imgs, task, argmax=True, should_drop_fbs=False)
-
-                # print("TASK:", task[0], "TARGETS", targets[0])
-                # print(router_results.actions[0])
-                # print(router_results.action_probs[0])
-                # for a_t in router_results.actions[0]:
-                #     print(a_t)
-                #     print(self._fb_model.get_fb(a_t))
-
-                # plt.imshow(imgs[0].cpu().numpy().transpose(1,2,0) * 0.3081 - 0.1307, cmap="gray")
-                # plt.show()
+                
                 pred = self._fb_model(imgs, router_results.actions)
+
                 if self.args.num_classes == 1:
                     pred = torch.sigmoid(pred)
                     class_preds = pred >= self.args.decision_threshold
                     class_preds = class_preds.squeeze(1).cpu().numpy().astype(int)
                 else:
-                    class_preds = torch.argmax(pred)
-                    class_preds = class_preds.cpu().numpy().astype(int)
-
-                
+                    class_preds = torch.argmax(pred, dim=1)
+                    class_preds = class_preds.cpu().numpy().astype(int)                
                 y_preds[i*self.args.batch_size:(i+1)*self.args.batch_size] =class_preds 
+                
+                # Add to action count and prob
+                print(router_results.action_probs[0])
+                print(router_results.actions[0])
 
-
+                for t in range(self.args.max_depth):
+                    for b_i in range(task.shape[0]):
+                        action_count[router_results.actions[b_i][t]] += 1
+                        for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
+                            action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * router_results.action_probs[b_i][t][j]
+            
             if self.args.num_classes == 1:
-
                 test_f1_score = f1_score(y_trues, y_preds)
                 print("F1 score of testing dataset", test_f1_score)
                 test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
@@ -300,5 +297,11 @@ class ClassifierTrainer(Trainer):
                 print("F1 score of testing dataset", test_f1_score)
                 test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
                 print("Accuracy of testing dataset", test_acc_score)
-
-        return test_f1_score, test_acc_score
+            load_bal_loss = self.compute_load_balance_loss(action_prob_sum, action_count).cpu().tolist()[0]
+            print("LOAD BALANCE LOSS:", load_bal_loss)
+            print(action_count)
+            print("CROSS ENTROPY")
+        
+        self._router.train()
+        self._fb_model.train()
+        return test_f1_score, test_acc_score, load_bal_loss

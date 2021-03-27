@@ -6,8 +6,7 @@ class BlockTrainer:
     def __init__(self, args, fb_model, fb_optim):
         self.args = args
         if self.args.num_classes == 1:
-
-            self.bce_loss_fn = nn.BCEWithLogitsLoss()
+            self.loss_fn = nn.BCEWithLogitsLoss()
         else:
             self.loss_fn = nn.CrossEntropyLoss()
         
@@ -21,7 +20,11 @@ class BlockTrainer:
         total_bce_loss = torch.zeros(1).cuda()
         output_losses = torch.zeros(batch_size).cuda()
         for i in range(batch_size):
-            output_loss = self.loss_fn(pred[i].unsqueeze(0), target[i])
+            if self.args.num_classes == 1:                
+                output_loss = self.loss_fn(pred[i], target[i].float())
+            else:
+                output_loss = self.loss_fn(pred[i].unsqueeze(0), target[i])
+            
             output_losses[i] = output_loss.detach()
             total_bce_loss += output_loss
         #print("MODEL LOSS: ", loss, "pred", torch.sigmoid(pred)[0].detach().cpu().numpy()[0], "vs", target.cpu().numpy()[0])
