@@ -30,8 +30,8 @@ class ClassifierTrainer(Trainer):
         #test_acc_scores = []
 
         #print("len(self.train_data)", len(self.train_data))
-        # self.train_data = self.train_data[:128]
-        # self.test_data = self.test_data[:128]
+        #self.train_data = self.train_data[:128]
+        #self.test_data = self.test_data[:128]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -307,7 +307,7 @@ class ClassifierTrainer(Trainer):
  
             action_prob = action_count / action_count.sum()
             action_entropy = float(entropy(action_prob.cpu())[0])
-            num_unused_fbs = len(action_count) - torch.count_nonzero(action_count)
+            num_unused_fbs = int(len(action_count) - torch.count_nonzero(action_count))
             print("NUM UNUSED FBS", num_unused_fbs)
             print("ACTION ENTROPY", action_entropy)
             print("ACTION COUNT: ", action_count)
