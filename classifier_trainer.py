@@ -6,6 +6,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from sklearn.metrics import f1_score
 import math
+from scipy.stats import entropy
 
 from trainer import Trainer
 from router import Router
@@ -29,8 +30,8 @@ class ClassifierTrainer(Trainer):
         #test_acc_scores = []
 
         #print("len(self.train_data)", len(self.train_data))
-        # self.train_data = self.train_data[:2048]
-        # self.test_data = self.test_data[:2048]
+        # self.train_data = self.train_data[:128]
+        # self.test_data = self.test_data[:128]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -91,7 +92,7 @@ class ClassifierTrainer(Trainer):
                 # Fraction of tasks allocated to layer over batch
                 action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
                 # Compute loss
-                for t in range(len(action_probs[0])):
+                for t in range(self.args.max_depth):
                     #critic_loss =  * (1/len(critic_outputs)) * self.args.critic_lam 
                     critic_loss = self.critic_loss_fn(critic_outputs[:, t], tdlamret[:, t].unsqueeze(-1)) * (self.args.max_depth) * self.args.critic_lam
                     total_critic_loss += critic_loss.detach().cpu().numpy()
@@ -150,12 +151,12 @@ class ClassifierTrainer(Trainer):
                 # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
                 # print("self._router.critic_out.weight.grad.min()", self._router.critic_out.weight.grad.min())
                 #print("BEFORE: self._router.task_embs.weight.grad.min()", self._router.task_embs.weight.grad.min())
-                #print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
-                #print("self._router.task_embs.weight.grad.norm()", self._router.task_embs.weight.grad.norm())
+                # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
+                # print("self._router.task_embs.weight.grad.norm()", self._router.task_embs.weight.grad.norm())
                 # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
                 # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
-                # print("self._router.trans_router.decoder._layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.max())
-                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.min())
+                # print("self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.max())
+                # print("self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.min())
 
                 torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
                 self.optimizer.step()
@@ -181,10 +182,12 @@ class ClassifierTrainer(Trainer):
                     #     plot_attention_weights(state_labels, layer_ids, srouter_results.att_weights)
                     print(actions[0], "\n")
 
-            test_f1_score, test_acc_score, load_bal_loss = self.test_models()
+            test_f1_score, test_acc_score, load_bal_loss, action_entropy = self.test_models()
             self.test_results["test_f1_scores"].append(test_f1_score)
             self.test_results["test_acc_scores"].append(test_acc_score)
             self.test_results["load_bal_loss"].append(load_bal_loss)
+            self.test_results["action_entropy"].append(action_entropy)
+
 
             self.save()
 
@@ -299,9 +302,13 @@ class ClassifierTrainer(Trainer):
                 print("Accuracy of testing dataset", test_acc_score)
             load_bal_loss = self.compute_load_balance_loss(action_prob_sum, action_count).cpu().tolist()[0]
             print("LOAD BALANCE LOSS:", load_bal_loss)
-            print(action_count)
-            print("CROSS ENTROPY")
+ 
+            action_prob = action_count / action_count.sum()
+            action_entropy = float(entropy(action_prob.cpu())[0])
+            print(type(action_entropy))
+            print("ACTION ENTROPY", action_entropy)
+            print("ACTION COUNT: ", action_count)       
         
         self._router.train()
         self._fb_model.train()
-        return test_f1_score, test_acc_score, load_bal_loss
+        return test_f1_score, test_acc_score, load_bal_loss, action_entropy

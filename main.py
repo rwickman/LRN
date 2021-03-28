@@ -56,7 +56,7 @@ if __name__ == "__main__":
         help="GAE lambda.")
     parser.add_argument("--entropy_lam", type=float, default=0.001,
         help="Entropy lambda.")
-    parser.add_argument("--critic_lam", type=float, default=0.5,
+    parser.add_argument("--critic_lam", type=float, default=0.1,
         help="Critic lambda.")
     parser.add_argument("--load_bal_lam", type=float, default=0.1,
         help="Load-balancing lambda.")

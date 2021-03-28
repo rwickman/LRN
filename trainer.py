@@ -28,7 +28,8 @@ class Trainer(ABC):
             self.test_results = {
                 "test_f1_scores" : [],
                 "test_acc_scores" : [],
-                "load_bal_loss" : []
+                "load_bal_loss" : [],
+                "action_entropy": []
             }
 
 
