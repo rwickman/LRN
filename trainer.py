@@ -29,7 +29,8 @@ class Trainer(ABC):
                 "test_f1_scores" : [],
                 "test_acc_scores" : [],
                 "load_bal_loss" : [],
-                "action_entropy": []
+                "action_entropy": [],
+                "num_unused_fbs" : []
             }
 
 

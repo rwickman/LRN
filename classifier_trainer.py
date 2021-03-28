@@ -182,11 +182,13 @@ class ClassifierTrainer(Trainer):
                     #     plot_attention_weights(state_labels, layer_ids, srouter_results.att_weights)
                     print(actions[0], "\n")
 
-            test_f1_score, test_acc_score, load_bal_loss, action_entropy = self.test_models()
+            test_f1_score, test_acc_score, load_bal_loss, action_entropy, num_unused_fbs = self.test_models()
             self.test_results["test_f1_scores"].append(test_f1_score)
             self.test_results["test_acc_scores"].append(test_acc_score)
             self.test_results["load_bal_loss"].append(load_bal_loss)
             self.test_results["action_entropy"].append(action_entropy)
+            self.test_results["num_unused_fbs"].append(num_unused_fbs)
+
 
 
             self.save()
@@ -305,10 +307,14 @@ class ClassifierTrainer(Trainer):
  
             action_prob = action_count / action_count.sum()
             action_entropy = float(entropy(action_prob.cpu())[0])
-            print(type(action_entropy))
+            num_unused_fbs = len(action_count) - torch.count_nonzero(action_count)
+            print("NUM UNUSED FBS", num_unused_fbs)
             print("ACTION ENTROPY", action_entropy)
-            print("ACTION COUNT: ", action_count)       
+            print("ACTION COUNT: ", action_count)
+            
+            
+            
         
         self._router.train()
         self._fb_model.train()
-        return test_f1_score, test_acc_score, load_bal_loss, action_entropy
+        return test_f1_score, test_acc_score, load_bal_loss, action_entropy, num_unused_fbs
