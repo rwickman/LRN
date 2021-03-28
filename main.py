@@ -1,6 +1,6 @@
 import argparse
 from classifier_trainer import ClassifierTrainer
-from rl_trainer import RLTrainer
+#from rl_trainer import RLTrainer
 import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
 from mnist_benchmarks import run_mnist_benchmarks
@@ -88,6 +88,10 @@ if __name__ == "__main__":
         help="File to save JSON test results.")
     parser.add_argument("--run_mnist_benchmarks", action="store_true",
         help="Run MNIST benchmarks.")
+    parser.add_argument("--val_split", action="store_true",
+        help="Split training into training/validation data and don't use testing set.")
+    parser.add_argument("--val_pct", type=float, default=0.2,
+        help="Percentage of validation split.")
 
 
     main(parser.parse_args())
