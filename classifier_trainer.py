@@ -22,6 +22,7 @@ class ClassifierTrainer(Trainer):
 
         self.load_data()
         self._block_trainer = BlockTrainer(self.args, self._fb_model, self.fb_optim)
+        self._action_smooth_loss = nn.KLDivLoss()
                 
     def train(self):
         critic_losses = []
@@ -30,8 +31,8 @@ class ClassifierTrainer(Trainer):
         #test_acc_scores = []
 
         #print("len(self.train_data)", len(self.train_data))
-        #self.train_data = self.train_data[:128]
-        #self.test_data = self.test_data[:128]
+        self.train_data = self.train_data[:2048]
+        self.test_data = self.test_data[:512]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -119,6 +120,22 @@ class ClassifierTrainer(Trainer):
                             print(router_results.action_indices[b_i][t])
                             print(action_prob)
                             assert False
+                        
+                        # Add label-smoothing loss
+                        num_valid_fbs = len(router_results.valid_fbs_ep[b_i][t])
+                        if num_valid_fbs > 1:
+                            max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
+                            if action_prob > max_action_prob:
+                                smooth_actions = torch.zeros_like(action_probs[b_i][t])#torch.tensor(self.args.alpha).repeat_interleave(num_valid_fbs)
+                                # Add prob to all valid actions
+                                smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
+                                # Add extra prob to selected action
+                                smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
+                                smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(action_probs[b_i][t] + 1e-7), smooth_actions)
+                                loss += smooth_loss
+                            
+
+                        action_probs[b_i][t]
                         actor_loss = -torch.log(action_prob) * advs[b_i][t] / self.args.batch_size 
                         loss += actor_loss
                         total_actor_loss += actor_loss.detach().cpu().numpy()
@@ -169,6 +186,7 @@ class ClassifierTrainer(Trainer):
                     print("CRITIC LOSS", total_critic_loss)
                     print("TOTAL ACTOR LOSS", total_actor_loss)
                     print("load_balance_loss", load_balance_loss)
+                    print("ACTION SMOOTHING LOSS", smooth_loss)
                     print("\ntask", task[0], " target", target[0])
                     for j, action_prob in enumerate(action_probs[0]):
                         print(f"action_probs[{j}]", action_prob)

@@ -92,6 +92,12 @@ if __name__ == "__main__":
         help="Split training into training/validation data and don't use testing set.")
     parser.add_argument("--val_pct", type=float, default=0.2,
         help="Percentage of validation split.")
+    parser.add_argument("--alpha", type=float, default=0.1,
+        help="Alpha value used for label smoothing.")
+    parser.add_argument("--smooth_lam", type=float, default=0.1,
+        help="Weight for action smoothing loss value used for label smoothing.")
+
+    
 
 
     main(parser.parse_args())
