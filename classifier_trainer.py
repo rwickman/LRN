@@ -81,6 +81,7 @@ class ClassifierTrainer(Trainer):
                 loss = torch.zeros(1).cuda()
                 total_critic_loss = 0
                 total_actor_loss = 0
+                total_smooth_loss = 0
                 #total_enp_loss = 0
                 advs = (advs - advs.mean()) / advs.std()
                 #advs = torch.clamp(advs, min=-3, max=3)
@@ -133,7 +134,7 @@ class ClassifierTrainer(Trainer):
                                 smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
                                 smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(action_probs[b_i][t] + 1e-7), smooth_actions)
                                 loss += smooth_loss
-                            
+                                total_smooth_loss += smooth_loss.detach().cpu().numpy()
 
                         action_probs[b_i][t]
                         actor_loss = -torch.log(action_prob) * advs[b_i][t] / self.args.batch_size 
@@ -186,7 +187,7 @@ class ClassifierTrainer(Trainer):
                     print("CRITIC LOSS", total_critic_loss)
                     print("TOTAL ACTOR LOSS", total_actor_loss)
                     print("load_balance_loss", load_balance_loss)
-                    print("ACTION SMOOTHING LOSS", smooth_loss)
+                    print("ACTION SMOOTHING LOSS", total_smooth_loss)
                     print("\ntask", task[0], " target", target[0])
                     for j, action_prob in enumerate(action_probs[0]):
                         print(f"action_probs[{j}]", action_prob)
