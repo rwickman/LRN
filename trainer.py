@@ -89,6 +89,9 @@ class Trainer(ABC):
     
         with open(os.path.join(self.args.save_dir, self.args.test_results), "w") as f:
             json.dump(self.test_results, f)
+        
+        with open(os.path.join(self.args.save_dir, "fb_count.json"), "w") as f:
+            json.dump(self._fb_count.tolist(), f)
 
     def load(self):
         #self._router.load_state_dict(torch.load(os.path.join(self.args.save_dir, "router.pt")))
@@ -104,4 +107,10 @@ class Trainer(ABC):
         self.test_results = {}
         with open(os.path.join(self.args.save_dir, self.args.test_results), "r") as f:
             self.test_results = json.load(f)
+        
+        fb_count_json = os.path.join(self.args.save_dir, "fb_count.json")
+        if os.path.exists(fb_count_json):
+            with open(fb_count_json) as f:
+                self._fb_count = torch.tensor(json.load(f))
+
 
