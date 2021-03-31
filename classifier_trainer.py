@@ -31,8 +31,8 @@ class ClassifierTrainer(Trainer):
         #test_acc_scores = []
 
         #print("len(self.train_data)", len(self.train_data))
-        self.train_data = self.train_data[:2048]
-        self.test_data = self.test_data[:512]
+        #self.train_data = self.train_data[:2048]
+        #self.test_data = self.test_data[:512]
 
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)

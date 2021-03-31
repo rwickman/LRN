@@ -16,12 +16,12 @@ class Trainer(ABC):
         self._fb_model = FBModel(self.args).cuda()
         self._router = Router(self.args, self.args.num_tasks, self._fb_model).cuda()
         
-        self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
+        self.optimizer = optim.RMSprop(self._router.parameters(), lr=self.args.lr)
         self.fb_optim = optim.Adam(self._fb_model.parameters(), lr=self.args.fb_lr)
         self.adv_avg = torch.zeros(self.args.max_depth).cuda()
         self.adv_std = torch.ones(self.args.max_depth).cuda()
         self.critic_loss_fn = nn.SmoothL1Loss()
-        self._layer_count = {}
+        self._fb_count = torch.zeros(self._router.num_fbs + 1)
         if self.args.load:
             self.load()
         else:
@@ -66,13 +66,10 @@ class Trainer(ABC):
         bonus = torch.zeros((batch_size, depth)).cuda()
         for i in range(batch_size):
             for j in range(depth):
-                if actions[i][j] not in self._layer_count:
-                    self._layer_count[actions[i][j]] = 0
-                bonus[i][j] += (1 / np.log(self._layer_count[actions[i][j]] + 2))
+                self._fb_count[actions[i][j]] += 1
+                bonus[i][j] +=  1 - self._fb_count[actions[i][j]]/self._fb_count.sum()#(1 / np.log(self._layer_count[actions[i][j]] + 2))
                     
-                #bonus[i][j] += 1 / (self._layer_count[actions[i][j]] + 1)
-                self._layer_count[actions[i][j]] += 1
-        #print(bonus)
+
         return bonus
 
     def save(self):
