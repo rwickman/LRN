@@ -29,6 +29,8 @@ class FBModel(nn.Module):
         self._num_filters = 32
         self._filter_size = 3
         self._hidden_size = 128
+        self._conv_to_fc_in = (self.args.img_size//2)**2*self._num_filters
+        self.max_pool = nn.MaxPool2d(2)
         self._init_layers()
 
     def _init_layers(self):
@@ -54,7 +56,7 @@ class FBModel(nn.Module):
 
             fbs.append(
                 FunctionBlock(
-                    nn.Linear(self.args.img_size**2*self._num_filters, self._hidden_size),
+                    nn.Linear(self._conv_to_fc_in, self._hidden_size),
                     nn.LayerNorm(self._hidden_size, eps=1e-6),
                     nn.ReLU()
                 )
@@ -77,7 +79,7 @@ class FBModel(nn.Module):
 
             fbs.append(
                 FunctionBlock(
-                    nn.Linear(self.args.img_size**2*self._num_filters, self.args.num_classes)
+                    nn.Linear(self._conv_to_fc_in, self.args.num_classes)
                 )
             )
         
@@ -108,6 +110,7 @@ class FBModel(nn.Module):
                 if a_t != PASS_FB:
                     cur_fb =  self.get_fb(a_t)
                     if isinstance(prev_layer, nn.Conv2d) and isinstance(cur_fb.layer, nn.Linear):
+                        cur_x = self.max_pool(cur_x)
                         cur_x = torch.flatten(cur_x, start_dim=1)
                     cur_x = cur_fb(cur_x)
                     prev_layer = cur_fb.layer

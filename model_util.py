@@ -43,10 +43,10 @@ def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_
         elif isinstance(cur_layer, nn.Linear):
             if cur_depth < max_depth - 1:
                 # The output of the Conv layer must match linear
-                return out_size == cur_layer.in_features
+                return out_size / 4 == cur_layer.in_features
             else:
                 # As this is the last layer, the output must equal the number of classes
-                return out_size == cur_layer.in_features and cur_layer.out_features == num_classes 
+                return out_size / 4 == cur_layer.in_features and cur_layer.out_features == num_classes 
 
         elif cur_layer is None:
             # Only use PASS_LAYER if not at last depth
