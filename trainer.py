@@ -18,8 +18,9 @@ class Trainer(ABC):
         print("ROUTER PARAMS: ", sum(p.numel() for p in self._router.parameters()))
         print("FB MODEL PARAMS: ", sum(p.numel() for p in self._fb_model.parameters()))
 
-        #self.optimizer = optim.RMSprop(self._router.parameters(), lr=self.args.lr)
-        self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
+        self.optimizer = optim.RMSprop(self._router.parameters(), lr=self.args.lr)
+        
+        #self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
         self.fb_optim = optim.Adam(self._fb_model.parameters(), lr=self.args.fb_lr)
         self.adv_avg = torch.zeros(self.args.max_depth).cuda()
         self.adv_std = torch.ones(self.args.max_depth).cuda()
