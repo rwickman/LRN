@@ -37,7 +37,7 @@ class ClassifierTrainer(Trainer):
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
             for i in range(len(self.train_data)//self.args.batch_size):
-                #print("i", i)                
+                self._fb_count = torch.zeros(self._router.num_fbs + 1)
                 #tasks = #np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
                 task = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
                 # if self.args.constraints and int(task) not in self.tasks:
@@ -58,6 +58,8 @@ class ClassifierTrainer(Trainer):
                 rewards = torch.zeros_like(torch.tensor(actions), dtype=torch.float64).cuda()
                 
                 if not self.args.no_reward_bonus:
+                    self._fb_count += router_results.fb_count
+                    
                     rewards += self.layer_reward_bonus(actions)
                 # Record the task architecture
                 # if epoch > 50:
@@ -182,6 +184,7 @@ class ClassifierTrainer(Trainer):
 
 
                 if i % 8 == 0:
+                    print("router_results.fb_count", router_results.fb_count)
                     print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
                     # print("TOTAL ENP LOSS", total_enp_loss)
                     print("CRITIC LOSS", total_critic_loss)

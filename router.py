@@ -422,7 +422,7 @@ class Router(nn.Module):
         att_weights_list = [[] for _ in range(batch_size)]
         state = torch.stack((enc_state, task_emb), 1)
         valid_fbs_ep = [[] for _ in range(batch_size)]
-
+        fb_count = torch.zeros(self.num_fbs  + 1)
         # Build the model architecture 
         for i in range(self.args.max_depth):
             # Update the valid fbs over the batch
@@ -480,6 +480,7 @@ class Router(nn.Module):
                 action_indices[b_i].append(fb_sample)
                 action_probs[b_i].append(fb_probs[b_i])
                 fb_choices.append(fb_choice)
+                fb_count[fb_choice] += 1
                 
                 # Remove the fb choice
                 if fb_choice != PASS_FB:
@@ -499,7 +500,15 @@ class Router(nn.Module):
                 state = torch.stack((enc_state, task_emb), 1)
                 state = torch.cat((state, chosen_fbs), 1)
 
-        return RouterResult(failed, action_probs, actions, action_indices, critic_outputs, att_weights_list, valid_fbs_ep) 
+        return RouterResult(
+            failed, 
+            action_probs, 
+            actions, 
+            action_indices, 
+            critic_outputs, 
+            att_weights_list, 
+            valid_fbs_ep,
+            fb_count) 
 
 
     def _get_valid_fbs(self, builder, fb_emb_indices, cur_depth):

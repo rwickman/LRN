@@ -15,6 +15,7 @@ class RouterResult:
     critic_outputs: List[torch.Tensor]
     att_weights: List[Dict[str, torch.Tensor]]
     valid_fbs_ep: List[List[int]]
+    fb_count: torch.Tensor
 
 PASS_FB = 0
 
