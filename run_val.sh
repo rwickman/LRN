@@ -23,7 +23,7 @@ python3 main.py --batch_size 64 --max_depth $max_depth --num_dup_layer $num_dup_
 mv models "old_models/CIFAR_Reptile_People/val/models_load_0_drop_0_alpha_0"
 
 # Label smoothing only
-for v in "${load_bal_vals[@]}";
+for v in "${alpha_vals[@]}";
 do
   python3 main.py --batch_size 64 --max_depth $max_depth --num_dup_layer $num_dup_layer --epochs $epochs \
     --train_data data/cifar_reptile_people.npy --test_data data/cifar_reptile_people_test.npy \
