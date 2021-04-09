@@ -17,10 +17,8 @@ class Trainer(ABC):
         self._router = Router(self.args, self.args.num_tasks, self._fb_model).cuda()
         print("ROUTER PARAMS: ", sum(p.numel() for p in self._router.parameters()))
         print("FB MODEL PARAMS: ", sum(p.numel() for p in self._fb_model.parameters()))
-
-        self.optimizer = optim.RMSprop(self._router.parameters(), lr=self.args.lr)
         
-        #self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
+        self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
         self.fb_optim = optim.Adam(self._fb_model.parameters(), lr=self.args.fb_lr)
         self.adv_avg = torch.zeros(self.args.max_depth).cuda()
         self.adv_std = torch.ones(self.args.max_depth).cuda()
@@ -71,7 +69,8 @@ class Trainer(ABC):
         for i in range(batch_size):
             for j in range(depth):
                 #bonus[i][j] += self._fb_count[actions[i][j]]/self._fb_count.sum()#(1 / np.log(self._layer_count[actions[i][j]] + 2))
-                bonus[i][j] += 1 - (self._fb_count[actions[i][j]] - self._fb_count.min()) / (self._fb_count.max() - self._fb_count.min())   
+                bonus[i][j] += 1 - (self._fb_count[actions[i][j]] - self._fb_count.min()) / (self._fb_count.max() - self._fb_count.min())
+                #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
         
 
         return bonus
@@ -96,6 +95,9 @@ class Trainer(ABC):
         
         with open(os.path.join(self.args.save_dir, "fb_count.json"), "w") as f:
             json.dump(self._fb_count.tolist(), f)
+
+        with open(os.path.join(self.args.save_dir,"args.json"), "w") as f:
+            json.dump(vars(self.args), f)
 
     def load(self):
         #self._router.load_state_dict(torch.load(os.path.join(self.args.save_dir, "router.pt")))
