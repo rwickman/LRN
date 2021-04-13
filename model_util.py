@@ -136,3 +136,17 @@ def plot_attention_weights(state_labels, layer_ids, attention_heads):
     # plt.tight_layout()
     plt.show()
 
+def create_padding_mask(valid_fbs_batch):
+    masks = torch.zeros_like(valid_fbs_batch).cuda()
+    batch_size = len(masks)
+    # if len(masks[0]) > 1:
+    #     return masks
+    for i in range(len(masks)):
+        mask_start = 1
+        for j in range(1, len(valid_fbs_batch[i])):
+            if valid_fbs_batch[i, j] == 0:
+                break
+            mask_start += 1
+
+        masks[i, mask_start:] = 1
+    return torch.reshape(masks, (masks.shape[0], 1, 1, masks.shape[1]))

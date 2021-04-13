@@ -11,21 +11,6 @@ from model_util import *
 from model_builder import ModelBuilder
 
 
-def create_padding_mask(valid_fbs_batch):
-    masks = torch.zeros_like(valid_fbs_batch).cuda()
-    batch_size = len(masks)
-    # if len(masks[0]) > 1:
-    #     return masks
-    for i in range(len(masks)):
-        mask_start = 1
-        for j in range(1, len(valid_fbs_batch[i])):
-            if valid_fbs_batch[i, j] == 0:
-                break
-            mask_start += 1
-
-        masks[i, mask_start:] = 1
-    return torch.reshape(masks, (masks.shape[0], 1, 1, masks.shape[1]))
-
 class MultiHeadAttention(nn.Module):
     def __init__(self, args):
         super().__init__()
@@ -362,18 +347,18 @@ class Critic(nn.Module):
     def forward(self, state, fb_mask=None):
         enc_output = self.critic_encoder(state)
         
-        att_logits = self.critic_out1(enc_output)
+        att_logits = self.critic_out1(enc_output)#.squeeze(-1)
 
         if fb_mask is not None:
             att_logits += (fb_mask * -1e9)
 
+        state_att = F.softmax(att_logits, dim=1)
 
-        state_att = F.softmax(att_logits, dim=-1)
-        
         # Perform weight combination
         comb_state = torch.matmul(state_att.transpose(2,1), enc_output)
 
-        out = self.critic_out2(F.relu(comb_state)).squeeze(-1)
+        out = self.critic_out2(F.relu(comb_state))
+        out = out.squeeze(-1)
         return out
 
 class Router(nn.Module):
@@ -576,12 +561,9 @@ class Router(nn.Module):
         # Get task embedding
         task_emb = self.task_embs(task_id)
         
-        # Embeddings for the current FBs in model
-        
-        
-
         state = torch.stack((enc_state, task_emb), 1)
         if len(actions) > 0:
+            # Embeddings for the current FBs in model
             fb_actions_embs = self.fb_embs(actions.unsqueeze(0))
 
             state = torch.cat((state, fb_actions_embs), 1)
@@ -589,14 +571,6 @@ class Router(nn.Module):
             pass_fb_tensor = torch.tensor([[PASS_FB]], dtype=torch.int64).cuda()
             fb_actions_embs = self.fb_embs(pass_fb_tensor)
 
-        h_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
-        c_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
-
-        # Compute critic output        
-        # for fb_emb in fb_actions_embs[0]:
-        #     inp = torch.cat((enc_state, task_emb, fb_emb.unsqueeze(0)), 1)
-        #     h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
-            
         val_pred = self.critic(state)
         
         # At the end v_t will contain the final critic output
