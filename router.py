@@ -61,13 +61,6 @@ class MultiHeadAttention(nn.Module):
         
         scaled_att_logits = qk / torch.sqrt(dk)
         if mask is not None:
-            # print("q.shape", q.shape)
-            # print("k.shape", k.shape)
-            # print("qk.shape", qk.shape)
-            # print("scaled_att_logits.shape", scaled_att_logits.shape)
-            # print("mask.shape", mask.shape)
-            # print(mask)
-
             scaled_att_logits += (mask * -1e9)
             
         att_weights = F.softmax(scaled_att_logits, dim=-1)
@@ -167,11 +160,11 @@ class DecoderLayer(nn.Module):
         return out, att_weights1, att_weights2
 
 class Encoder(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, num_enc_layers=1):
         super().__init__()
         self.args = args
         
-        self.enc_layers = nn.ModuleList([EncoderLayer(self.args) for _ in range(self.args.num_enc_layers)])
+        self.enc_layers = nn.ModuleList([EncoderLayer(self.args) for _ in range(num_enc_layers)])
         
         self.dropout = nn.Dropout(self.args.drop_rate)
     
@@ -230,12 +223,12 @@ class TransformerRouter(nn.Module):
         super().__init__()
         self.args = args
 
-        self.encoder = Encoder(self.args)
+        self.encoder = Encoder(self.args, self.args.num_enc_layers)
         self.decoder = Decoder(self.args)
 
         # Maps each decorder embedding to 1 value
-        self.actor_out1 = nn.Linear(self.args.hidden_size, 16)
-        self.actor_out2 = nn.Linear(16, 1)
+        self.actor_out1 = nn.Linear(self.args.hidden_size, 1)
+        #self.actor_out2 = nn.Linear(self.args.hidden_size, 1)
         
 
     def forward(self, state, fb_embs, fb_mask=None):
@@ -243,8 +236,8 @@ class TransformerRouter(nn.Module):
         
         dec_output, att_weights = self.decoder(fb_embs, enc_output, fb_mask)
         # batch size, len(fb_embs)
-        actor_out = self.actor_out1(dec_output)
-        actor_out = self.actor_out2(actor_out).squeeze(-1)
+        actor_out = self.actor_out1(dec_output).squeeze(-1)
+        #actor_out = self.actor_out2(actor_out).squeeze(-1)
         if fb_mask is not None:
             actor_out += torch.reshape(fb_mask, (fb_mask.shape[0], fb_mask.shape[-1])) * -1e9
         fb_probs = F.softmax(actor_out, dim=-1)
@@ -354,7 +347,34 @@ class StateEncoder(nn.Module):
 #     def forward(self, x, h_t, c_t):
 #         self.critic_cell
 
+class Critic(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.critic_encoder = Encoder(self.args, 1)
 
+        #self.critic_out1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.critic_out1 = nn.Linear(self.args.hidden_size, 1)
+        
+        self.critic_out2 = nn.Linear(self.args.hidden_size, 1)
+
+
+    def forward(self, state, fb_mask=None):
+        enc_output = self.critic_encoder(state)
+        
+        att_logits = self.critic_out1(enc_output)
+
+        if fb_mask is not None:
+            att_logits += (fb_mask * -1e9)
+
+
+        state_att = F.softmax(att_logits, dim=-1)
+        
+        # Perform weight combination
+        comb_state = torch.matmul(state_att.transpose(2,1), enc_output)
+
+        out = self.critic_out2(F.relu(comb_state)).squeeze(-1)
+        return out
 
 class Router(nn.Module):
     def __init__(self, args, num_tasks, fb_model):
@@ -374,17 +394,17 @@ class Router(nn.Module):
         
         #self.router_cell = nn.LSTMCell(self.args.hidden_size + self.args.task_emb_size + self.args.hidden_size, self.args.hidden_size)
 
-        self.critic_cell = nn.LSTMCell(self.args.hidden_size + self.args.hidden_size + self.args.hidden_size, self.args.hidden_size)
-        self.critic_out = nn.Linear(self.args.hidden_size, 1)
-        
+        # self.critic_cell = nn.LSTMCell(self.args.hidden_size + self.args.hidden_size + self.args.hidden_size, self.args.hidden_size)
+        # self.critic_out = nn.Linear(self.args.hidden_size, 1)
+        self.critic = Critic(self.args)
         #self.att = Attention(self.args)
 
 
-    def forward(self, state, task_id, argmax=False, should_drop_fbs=True):
-        batch_size = state.shape[0]
+    def forward(self, imgs, task_id, argmax=False, should_drop_fbs=True):
+        batch_size = imgs.shape[0]
         
         # Encode the state
-        enc_state = self.state_encoder(state)
+        enc_state = self.state_encoder(imgs)
 
         # Get task embedding
         task_emb = self.task_embs(task_id)
@@ -451,10 +471,12 @@ class Router(nn.Module):
             #att_weights_list.append(att_weights)
 
             # Compute critic output
-            inp = torch.cat((enc_state, task_emb, fb_emb_choice), 1)
-            h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
-            v_t = self.critic_out(F.relu(h_t_critic))
+            # inp = torch.stack((enc_state, task_emb, fb_emb_choice), 1)
+            v_t = self.critic(state)
             critic_outputs[:, i] = v_t
+            # h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
+            # v_t = self.critic_out(F.relu(h_t_critic))
+            # critic_outputs[:, i] = v_t
 
             
             # Iterate over choices in a batch
@@ -498,6 +520,7 @@ class Router(nn.Module):
             if i +1 < self.args.max_depth:
                 chosen_fbs = self.fb_embs(torch.tensor(actions).cuda())
                 state = torch.stack((enc_state, task_emb), 1)
+                # [batch_size, 3, hidden_size]
                 state = torch.cat((state, chosen_fbs), 1)
 
         return RouterResult(
@@ -541,5 +564,50 @@ class Router(nn.Module):
             nondropped_fbs.append(random.choice(valid_fbs))
 
         return nondropped_fbs
+    
+    def predict_step(self, imgs, task_id, valid_fbs, actions):
+        """Get action and value for timestep."""
+        batch_size = imgs.shape[0]
+
+
+        # Encode the state
+        enc_state = self.state_encoder(imgs)
+
+        # Get task embedding
+        task_emb = self.task_embs(task_id)
+        
+        # Embeddings for the current FBs in model
+        
+        
+
+        state = torch.stack((enc_state, task_emb), 1)
+        if len(actions) > 0:
+            fb_actions_embs = self.fb_embs(actions.unsqueeze(0))
+
+            state = torch.cat((state, fb_actions_embs), 1)
+        else:
+            pass_fb_tensor = torch.tensor([[PASS_FB]], dtype=torch.int64).cuda()
+            fb_actions_embs = self.fb_embs(pass_fb_tensor)
+
+        h_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
+        c_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
+
+        # Compute critic output        
+        # for fb_emb in fb_actions_embs[0]:
+        #     inp = torch.cat((enc_state, task_emb, fb_emb.unsqueeze(0)), 1)
+        #     h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
+            
+        val_pred = self.critic(state)
+        
+        # At the end v_t will contain the final critic output
+        # Get FB embeddings
+        valid_fbs = valid_fbs.unsqueeze(0)
+        valid_fb_embs = self.fb_embs(valid_fbs)
+        # print(valid_fbs)
+        fb_masks_batch = create_padding_mask(valid_fbs)
+        fb_probs, _ = self.trans_router(state, valid_fb_embs, fb_masks_batch)
+
+        return fb_probs, val_pred
+            
                 
         
