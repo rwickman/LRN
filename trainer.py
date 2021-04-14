@@ -42,25 +42,29 @@ class Trainer(ABC):
 
 
     def compute_return(self, rewards, action_probs, critic_outputs):
-        returns = torch.zeros_like(rewards, dtype=torch.float32).cuda()
-        adv = torch.zeros_like(rewards, dtype=torch.float32).cuda()
-        T = len(returns[0])
-        for t in reversed(range(T)):
-            if t == T - 1:
-                returns[:, t] = rewards[:, t]
-                adv[:, t] = returns[:, t] -  critic_outputs[:, t, 0].detach()
-            else:
-                returns[:, t] = rewards[:, t] + self.args.gamma * returns[:, t+1]
+        with torch.no_grad():
+            returns = torch.zeros_like(rewards, dtype=torch.float32).cuda()
+            adv = torch.zeros_like(rewards, dtype=torch.float32).cuda()
+            T = len(returns[0])
+            for t in reversed(range(T)):
+                if t == T - 1:
+                    returns[:, t] = rewards[:, t]
+                    adv[:, t] = returns[:, t] -  critic_outputs[:, t, 0].detach()
+                else:
+                    returns[:, t] = rewards[:, t] + self.args.gamma * returns[:, t+1]
 
-                # TD Residual
-                delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1, 0].detach() -  critic_outputs[:, t, 0].detach()
-                
-                # GAE
-                adv[:, t] = delta + self.args.gamma * self.args.gae_lam * adv[:, t+1]
-                #adv[t] = returns[t] - critic_outputs[t].detach()
-        
-        tdlamret = adv + critic_outputs[:, :, 0].detach()
-        return returns, adv, tdlamret
+                    # TD Residual
+                    delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1, 0].detach() -  critic_outputs[:, t, 0].detach()
+                    
+                    # GAE
+                    adv[:, t] = delta + self.args.gamma * self.args.gae_lam * adv[:, t+1]
+                    #adv[t] = returns[t] - critic_outputs[t].detach()
+            
+            tdlamret = adv + critic_outputs[:, :, 0].detach()
+
+            # Standardize advantages
+            adv = (adv - adv.mean()) / adv.std()
+            return returns, adv, tdlamret
 
     def layer_reward_bonus(self, actions):
         batch_size = len(actions)

@@ -16,6 +16,8 @@ class RouterResult:
     att_weights: List[Dict[str, torch.Tensor]]
     valid_fbs_ep: List[List[int]]
     fb_count: torch.Tensor
+    # The max fbs over all timesteps/batches
+    max_fbs: int
 
 PASS_FB = 0
 

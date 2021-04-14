@@ -16,6 +16,51 @@ from block_trainer import BlockTrainer
 
 action_sets = {}
 
+def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_depth, max_fbs):
+    batch_size = len(valid_fbs_ep)
+    num_exs = batch_size * max_depth 
+
+    valid_fbs_ep_pad = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.int64).cuda()
+    valid_fbs_ep_mask = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.int64).cuda()
+
+    # Window the FBs chosen so far
+    actions_window =  torch.zeros(
+        (num_exs, max_depth),
+        dtype=torch.int64).cuda()
+    actions_mask = torch.zeros(
+        (num_exs, max_depth+2),
+        dtype=torch.int64).cuda()
+    
+    # One-hot encoded actions
+    actions_one_hot = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.int64).cuda()
+    action_probs_pad = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.float64).cuda()
+
+    actions = torch.tensor(actions)
+    action_indices = torch.tensor(action_indices, dtype=torch.int64)
+    action_indices = torch.reshape(action_indices, (-1, ))
+
+    for i in range(batch_size):
+        for j in range(max_depth):
+            ex_i = i*max_depth + j
+            actions_mask[ex_i, j+3:] = 1 
+            actions_window[ex_i, :j+1] = actions[i][:j+1]
+            valid_fbs_ep_pad[ex_i, :len(valid_fbs_ep[i][j])] = torch.tensor(valid_fbs_ep[i][j])
+            valid_fbs_ep_mask[ex_i, :len(valid_fbs_ep[i][j])+1] = 1
+            
+            actions_one_hot[ex_i, action_indices[ex_i]] = 1
+            action_probs_pad[ex_i, :action_probs[i][j].shape[0]] = action_probs[i][j]
+
+    return actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad
+
+
 class ClassifierTrainer(Trainer):
     def __init__(self, args):
         super().__init__(args)
@@ -27,19 +72,17 @@ class ClassifierTrainer(Trainer):
     def train(self):
         critic_losses = []
         model_bce_losses = []
-        #test_f1_scores = []
-        #test_acc_scores = []
 
-        #print("len(self.train_data)", len(self.train_data))
         #self.train_data = self.train_data[:2048]
         #self.test_data = self.test_data[:512]
-
+        
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
             for i in range(len(self.train_data)//self.args.batch_size):
+                
                 self._fb_count = torch.zeros(self._router.num_fbs + 1)
                 #tasks = #np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
-                task = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
+                task_ids = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
                 # if self.args.constraints and int(task) not in self.tasks:
                 #     continue
                 #plt.imshow(self.train_data[i % len(self.train_data)][1][0].transpose(1,2,0))
@@ -48,12 +91,16 @@ class ClassifierTrainer(Trainer):
                 
                 #print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1].shape)
                 imgs = np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
-                img = torch.tensor(imgs).cuda()
+                imgs = torch.tensor(imgs).cuda()
                 target = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2].astype(int), dtype=torch.int64).unsqueeze(1).cuda()
 
-                router_results = self._router(img, task)
+                router_results = self._router(imgs, task_ids)
                 action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
 
+
+                # print("actions_mask", actions_mask)
+                # print("actions_window", actions_window)
+                # print("valid_fbs_ep_pad", valid_fbs_ep_pad)
                 # Add reward bonus
                 rewards = torch.zeros_like(torch.tensor(actions), dtype=torch.float64).cuda()
                 
@@ -69,121 +116,169 @@ class ClassifierTrainer(Trainer):
                 # action_sets[action_task_pair] +=1
                 
                 # Train the output model
-                _, output_losses = self._block_trainer.train(img, actions, target)
+                _, output_losses = self._block_trainer.train(imgs, actions, target)
+                
                 
                 
                 # Reward based on model loss
                 rewards[:, -1] += -output_losses
 
                 model_bce_losses.append(output_losses.tolist())
-
                 
                 returns, advs, tdlamret = self.compute_return(rewards, action_probs, critic_outputs)
-                #returns[:len(added_layers)] += self.layer_reward_bonus(added_layers) 
-                loss = torch.zeros(1).cuda()
-                total_critic_loss = 0
-                total_actor_loss = 0
-                total_smooth_loss = 0
-                #total_enp_loss = 0
-                advs = (advs - advs.mean()) / advs.std()
-                #advs = torch.clamp(advs, min=-3, max=3)
-                #critic_loss = self.critic_loss_fn(critic_outputs, tdlamret) * self.args.critic_lam
-                #print("CRITIC LOSS", critic_loss)
-                
-                # Fraction of probability allocated to layer over batch
-                action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
-                # Fraction of tasks allocated to layer over batch
-                action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-                # Compute loss
-                for t in range(self.args.max_depth):
-                    #critic_loss =  * (1/len(critic_outputs)) * self.args.critic_lam 
-                    critic_loss = self.critic_loss_fn(critic_outputs[:, t], tdlamret[:, t].unsqueeze(-1)) * (self.args.max_depth) * self.args.critic_lam
-                    total_critic_loss += critic_loss.detach().cpu().numpy()
-                    
-                    loss += critic_loss
-                    #loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
+                advs = torch.reshape(advs, (-1, ))
+                tdlamret = torch.reshape(tdlamret, (-1, ))
 
-                    # delta = advs[t] - self.adv_avg[t] 
-                    # adv = (advs[t] - self.adv_avg[t]) / self.adv_std[t]**0.5
-                    # adv = max(min(3.0, adv), -3.0)
+                # Set up making each timestep an example
+                actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad = window_and_pad(
+                    router_results.valid_fbs_ep,
+                    actions,
+                    router_results.action_indices,
+                    action_probs,
+                    self.args.max_depth,
+                    router_results.max_fbs)
                     
-                    # self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
-                    # self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
-                    
-                    # if router_results.failed and t + 1 == len(action_probs) and adv >= 0:
-                    #     adv = -3
-                        # returns[t] = -3
-                    
-                    for b_i in range(self.args.batch_size):
-                        action_prob = action_probs[b_i][t][router_results.action_indices[b_i][t]]
-                        if action_prob == 0:
-                            print("action_probs", action_probs)
-                            print("action_probs[b_i][t]", action_probs[b_i][t])
-                            print(router_results.action_indices[b_i][t])
-                            print(action_prob)
-                            assert False
+                imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
+                task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
+                num_exs = self.args.max_depth * self.args.batch_size
+
+                with torch.autograd.set_detect_anomaly(True):
+                    total_critic_loss = 0
+                    total_actor_loss = 0
+                    for e_i in range(self.args.noptepochs):
+                        batch_ids = torch.randperm(num_exs)
+                        loss = torch.zeros(1).cuda()
+
+                        total_smooth_loss = 0
                         
-                        # Add label-smoothing loss
-                        num_valid_fbs = len(router_results.valid_fbs_ep[b_i][t])
-                        if num_valid_fbs > 1:
-                            max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
-                            if action_prob > max_action_prob:
-                                smooth_actions = torch.zeros_like(action_probs[b_i][t])#torch.tensor(self.args.alpha).repeat_interleave(num_valid_fbs)
-                                # Add prob to all valid actions
-                                smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
-                                # Add extra prob to selected action
-                                smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
-                                smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(action_probs[b_i][t] + 1e-7), smooth_actions)
-                                loss += smooth_loss
-                                total_smooth_loss += smooth_loss.detach().cpu().numpy()
+                        #advs = torch.clamp(advs, min=-3, max=3)
+                        #critic_loss = self.critic_loss_fn(critic_outputs, tdlamret) * self.args.critic_lam
+                        #print("CRITIC LOSS", critic_loss)
+                        
+                        # Fraction of probability allocated to layer over batch
+                        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
-                        action_probs[b_i][t]
-                        actor_loss = -torch.log(action_prob) * advs[b_i][t] / self.args.batch_size 
-                        loss += actor_loss
-                        total_actor_loss += actor_loss.detach().cpu().numpy()
+                        # Fraction of tasks allocated to layer over batch
+                        action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
 
-                        action_count[actions[b_i][t]] += 1
-                        for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
-                            action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[b_i][t][j]
-                        #enp_loss = -self.args.entropy_lam * action_prob * torch.log(action_prob +1e-10) / self.args.batch_size
-                        #total_enp_loss += enp_loss
-                        #loss += enp_loss                       
-                    # if not router_results.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
-                    #     loss += action_probs[t][0][actions[t]] * 10
+                        for m_i in range(self.args.nminibatches):
+                            loss = torch.zeros(1).cuda()
+                            start = m_i * (num_exs // self.args.nminibatches)
+                            end = (m_i + 1) * (num_exs // self.args.nminibatches)
+                            m_batch_idxs = batch_ids[start:end]
+                            # Get prediction for current timestep
+                            new_prob, val_pred = self._router.predict_step(
+                                imgs_batch_steps[m_batch_idxs],
+                                task_ids_steps[m_batch_idxs],
+                                valid_fbs_ep_pad[m_batch_idxs],
+                                actions_window[m_batch_idxs],
+                                actions_mask[m_batch_idxs])
+                            
+                            actor_loss, critic_loss = self.ppo_loss(
+                                advs[m_batch_idxs], 
+                                action_probs_pad[m_batch_idxs], 
+                                new_prob, 
+                                tdlamret[m_batch_idxs], 
+                                val_pred,
+                                actions_one_hot[m_batch_idxs])
 
-                    # Add entropy regularization
-                    
+                            total_critic_loss += self.args.critic_lam * critic_loss
+                            total_actor_loss += actor_loss 
+                            loss += actor_loss + self.args.critic_lam * critic_loss
+                            load_balance_loss = 0#self.args.load_bal_lam * self.compute_load_balance_loss(action_prob_sum, action_count) 
+                            loss += load_balance_loss
+                            loss.backward()
+
+                            torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
+
+                        # Compute loss
+                        # for t in range(self.args.max_depth):
+                            
+                        #     #critic_loss = self.critic_loss_fn(critic_outputs[:, t], tdlamret[:, t].unsqueeze(-1)) * (self.args.max_depth) * self.args.critic_lam
+                        #     #total_critic_loss += critic_loss.detach().cpu().numpy()
+                            
+                        #     #loss += critic_loss
+                        #     #loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
+
+                        #     # delta = advs[t] - self.adv_avg[t] 
+                        #     # adv = (advs[t] - self.adv_avg[t]) / self.adv_std[t]**0.5
+                        #     # adv = max(min(3.0, adv), -3.0)
+                            
+                        #     # self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
+                        #     # self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
+                            
+                        #     for b_i in range(self.args.batch_size):
+                        #         action_prob = action_probs[b_i][t][router_results.action_indices[b_i][t]]
+                        #         if action_prob == 0:
+                        #             print("action_probs", action_probs)
+                        #             print("action_probs[b_i][t]", action_probs[b_i][t])
+                        #             print(router_results.action_indices[b_i][t])
+                        #             print(action_prob)
+                        #             assert False
+                                
+                        #         # Add label-smoothing loss
+                        #         num_valid_fbs = len(router_results.valid_fbs_ep[b_i][t])
+                        #         if num_valid_fbs > 1:
+                        #             max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
+                        #             if action_prob > max_action_prob:
+                        #                 smooth_actions = torch.zeros_like(action_probs[b_i][t])#torch.tensor(self.args.alpha).repeat_interleave(num_valid_fbs)
+                        #                 # Add prob to all valid actions
+                        #                 smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
+                        #                 # Add extra prob to selected action
+                        #                 smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
+                        #                 smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(action_probs[b_i][t] + 1e-7), smooth_actions)
+                        #                 loss += smooth_loss
+                        #                 total_smooth_loss += smooth_loss.detach().cpu().numpy()
+                                
+                        #         # Get prediction for current timestep
+                        #         new_prob, val_pred = self._router.predict_step(
+                        #             imgs[b_i].unsqueeze(0),
+                        #             task_ids[b_i].unsqueeze(0),
+                        #             torch.tensor(router_results.valid_fbs_ep[b_i][t], dtype=torch.int64).cuda(),
+                        #             torch.tensor(actions[b_i][:t], dtype=torch.int64).cuda())
+                        #         actor_loss, critic_loss = self.ppo_loss(
+                        #             advs[b_i][t], 
+                        #             action_prob, 
+                        #             new_prob[0][router_results.action_indices[b_i][t]], 
+                        #             tdlamret[b_i][t].unsqueeze(-1).unsqueeze(-1), 
+                        #             val_pred)
+                        #         # print("action_prob", action_prob)
+                        #         # print("new_prob[router_results.action_indices[b_i][t]]", new_prob[0][router_results.action_indices[b_i][t]]) 
+                        #         # print("ACTOR LOSS, ", actor_loss)
+                        #         # print("critic_loss", critic_loss)
+                        #         actor_loss = actor_loss / self.args.batch_size
+                        #         critic_loss = critic_loss / self.args.batch_size  
+                        #         #actor_loss = -torch.log(action_prob) * advs[b_i][t] / self.args.batch_size 
+                        #         loss += actor_loss + self.args.critic_lam * critic_loss 
+                        #         total_actor_loss += actor_loss.detach().cpu().numpy()
+                        #         total_critic_loss += critic_loss.detach().cpu().numpy()
+
+                        #         action_count[actions[b_i][t]] += 1
+                        #         for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
+                        #             action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[b_i][t][j]
+                        #         #enp_loss = -self.args.entropy_lam * action_prob * torch.log(action_prob +1e-10) / self.args.batch_size
+                        #         #total_enp_loss += enp_loss
+                        #         #loss += enp_loss                       
+                        #     # if not router_results.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
+                        #     #     loss += action_probs[t][0][actions[t]] * 10
+
+                        #     # Add entropy regularization
+                            
 
 
-                #loss += critic_loss
-                critic_losses.append(total_critic_loss)
-                #print("Entropy loss", -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10)))
+                        #loss += critic_loss
+                        critic_losses.append(total_critic_loss)
+                        #print("Entropy loss", -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10)))
 
-                # Update router model
-                # Load-balance loss
-                load_balance_loss = self.args.load_bal_lam * self.compute_load_balance_loss(action_prob_sum, action_count) 
-                loss += load_balance_loss
-                loss.backward()
-
-                # print("\nself._router.fb_model._fbs[0].layer.weight.grad.max()", self._router.fb_model._fbs[0].layer.weight.grad.max())
-                # print("self._router.fb_model._fbs[0].layer.weight.grad.min()", self._router.fb_model._fbs[0].layer.weight.grad.min())
-                # print("self._router.critic_out.weight.grad.max()", self._router.critic_out.weight.grad.max())
-                # print("self._router.critic_out.weight.grad.min()", self._router.critic_out.weight.grad.min())
-                #print("BEFORE: self._router.task_embs.weight.grad.min()", self._router.task_embs.weight.grad.min())
-                # print("self._router.task_embs.weight.grad.max()", self._router.task_embs.weight.grad.max())
-                # print("self._router.task_embs.weight.grad.norm()", self._router.task_embs.weight.grad.norm())
-                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.max())
-                # print("self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.encoder.enc_layers[0].pw_ffn.fc1.weight.grad.min())
-                # print("self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.max()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.max())
-                # print("self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.min()", self._router.trans_router.decoder.dec_layers[0].pw_ffn.fc1.weight.grad.min())
-
-                torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                        # Update router model
+                        # Load-balance loss
 
 
                 if i % 8 == 0:
+                    #print("Output BCE Losses", output_losses)
                     print("router_results.fb_count", router_results.fb_count)
                     print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
                     # print("TOTAL ENP LOSS", total_enp_loss)
@@ -191,10 +286,11 @@ class ClassifierTrainer(Trainer):
                     print("TOTAL ACTOR LOSS", total_actor_loss)
                     print("load_balance_loss", load_balance_loss)
                     print("ACTION SMOOTHING LOSS", total_smooth_loss)
-                    print("\ntask", task[0], " target", target[0])
+                    print("\ntask", task_ids[0], " target", target[0])
                     for j, action_prob in enumerate(action_probs[0]):
                         print(f"action_probs[{j}]", action_prob)
-                    print("Critic Outputs", critic_outputs[0].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret.detach().cpu().numpy()[0], advs.detach().cpu().numpy()[0])
+                    print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
+                    print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
                     # print("Avg ADV", self.adv_avg)
                     # print("STD ADV", self.adv_std)
                     
@@ -340,3 +436,38 @@ class ClassifierTrainer(Trainer):
         self._router.train()
         self._fb_model.train()
         return test_f1_score, test_acc_score, load_bal_loss, action_entropy, num_unused_fbs
+
+    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions_one_hot):
+        """PPO discreate loss function.
+        Args:
+            advantage: advantage from the episode.
+            old_pred: old softmax predictions.
+            y_true: one-hot encoded actions taken in the episode.
+            y_pred: new softmax predictions.
+            val_true: true values (i.e., returns) from the episode.
+            val_pred: critic value predictions
+        
+        Returns:
+            A tuple of PPO loss and value MSE loss 
+        """
+        new_prob = torch.log(torch.sum(actions_one_hot * new_prob, axis=-1))
+        old_prob = torch.log(torch.sum(actions_one_hot * old_prob, axis=-1))
+
+        # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
+        ratio = torch.exp(new_prob - old_prob.detach())
+
+        surrogate_1 = ratio * adv
+
+        # Clipped policy gradient, ratio clipped between [0.8, 1.2]
+        surrogate_2 = torch.clip(ratio, 1.0 - self.args.eps_clip, 1.0 + self.args.eps_clip) * adv
+
+        # Entropy regularization
+        #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
+        entropy_pen = 0
+        # PPO loss, averaged over several batches
+        policy_loss = -torch.mean(torch.min(surrogate_1, surrogate_2))
+
+        # Value loss (MSE)
+        vf_loss = self.critic_loss_fn(val_pred.squeeze(-1), val_true)
+
+        return  policy_loss, vf_loss
