@@ -7,7 +7,7 @@ import json, os
 
 from router import Router
 from fb_model import FBModel
-
+from model_util import PASS_FB
 
 class Trainer(ABC):
     
@@ -73,7 +73,10 @@ class Trainer(ABC):
         for i in range(batch_size):
             for j in range(depth):
                 #bonus[i][j] += self._fb_count[actions[i][j]]/self._fb_count.sum()#(1 / np.log(self._layer_count[actions[i][j]] + 2))
-                bonus[i][j] += 1 - (self._fb_count[actions[i][j]] - self._fb_count.min()) / (self._fb_count.max() - self._fb_count.min())
+                if actions[i][j] == PASS_FB:
+                    bonus[i][j] = 0
+                else:
+                    bonus[i][j] += 1 - (self._fb_count[actions[i][j]] - self._fb_count.min()) / (self._fb_count.max() - self._fb_count.min())
                 #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
         
 
