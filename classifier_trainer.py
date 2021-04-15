@@ -26,6 +26,7 @@ def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_dept
     valid_fbs_ep_mask = torch.zeros(
         (num_exs, max_fbs),
         dtype=torch.int64).cuda()
+    valid_fbs_count = torch.zeros(num_exs)
 
     # Window the FBs chosen so far
     actions_window =  torch.zeros(
@@ -34,6 +35,7 @@ def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_dept
     actions_mask = torch.zeros(
         (num_exs, max_depth+2),
         dtype=torch.int64).cuda()
+    
     
     # One-hot encoded actions
     actions_one_hot = torch.zeros(
@@ -54,11 +56,12 @@ def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_dept
             actions_window[ex_i, :j+1] = actions[i][:j+1]
             valid_fbs_ep_pad[ex_i, :len(valid_fbs_ep[i][j])] = torch.tensor(valid_fbs_ep[i][j])
             valid_fbs_ep_mask[ex_i, :len(valid_fbs_ep[i][j])+1] = 1
+            valid_fbs_count[ex_i] = len(valid_fbs_ep[i][j])
             
             actions_one_hot[ex_i, action_indices[ex_i]] = 1
             action_probs_pad[ex_i, :action_probs[i][j].shape[0]] = action_probs[i][j]
 
-    return actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad
+    return actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count
 
 
 class ClassifierTrainer(Trainer):
@@ -118,11 +121,9 @@ class ClassifierTrainer(Trainer):
                 # Train the output model
                 _, output_losses = self._block_trainer.train(imgs, actions, target)
                 
-                
-                
                 # Reward based on model loss
                 rewards[:, -1] += -output_losses
-
+                
                 model_bce_losses.append(output_losses.tolist())
                 
                 returns, advs, tdlamret = self.compute_return(rewards, action_probs, critic_outputs)
@@ -131,14 +132,14 @@ class ClassifierTrainer(Trainer):
                 tdlamret = torch.reshape(tdlamret, (-1, ))
 
                 # Set up making each timestep an example
-                actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad = window_and_pad(
+                actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count = window_and_pad(
                     router_results.valid_fbs_ep,
                     actions,
                     router_results.action_indices,
                     action_probs,
                     self.args.max_depth,
                     router_results.max_fbs)
-                    
+                
                 imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
                 task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
                 num_exs = self.args.max_depth * self.args.batch_size
@@ -183,13 +184,18 @@ class ClassifierTrainer(Trainer):
                                 val_pred,
                                 actions_one_hot[m_batch_idxs])
 
+                            
                             total_critic_loss += self.args.critic_lam * critic_loss
                             total_actor_loss += actor_loss 
                             loss += actor_loss + self.args.critic_lam * critic_loss
                             load_balance_loss = 0#self.args.load_bal_lam * self.compute_load_balance_loss(action_prob_sum, action_count) 
                             loss += load_balance_loss
-                            loss.backward()
+                            smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs])
+                            loss += smooth_loss
+                            
+                            total_smooth_loss += smooth_loss.detach().cpu().numpy()
 
+                            loss.backward()
                             torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
                             self.optimizer.step()
                             self.optimizer.zero_grad()
@@ -205,7 +211,20 @@ class ClassifierTrainer(Trainer):
 
                         #     # delta = advs[t] - self.adv_avg[t] 
                         #     # adv = (advs[t] - self.adv_avg[t]) / self.adv_std[t]**0.5
-                        #     # adv = max(min(3.0, adv), -3.0)
+                        #     # adv = max(min(3.0, adv), -3.0)                        #         # Add label-smoothing loss
+                        #         num_valid_fbs = len(router_results.valid_fbs_ep[b_i][t])
+                        #         if num_valid_fbs > 1:
+                        #             max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
+                        #             if action_prob > max_action_prob:
+                        #                 smooth_actions = torch.zeros_like(action_probs[b_i][t])#torch.tensor(self.args.alpha).repeat_interleave(num_valid_fbs)
+                        #                 # Add prob to all valid actions
+                        #                 smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
+                        #                 # Add extra prob to selected action
+                        #                 smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
+                        #                 smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(action_probs[b_i][t] + 1e-7), smooth_actions)
+                        #                 loss += smooth_loss
+                        #                 total_smooth_loss += smooth_loss.detach().cpu().numpy()
+                                
                             
                         #     # self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
                         #     # self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
@@ -471,3 +490,25 @@ class ClassifierTrainer(Trainer):
         vf_loss = self.critic_loss_fn(val_pred.squeeze(-1), val_true)
 
         return  policy_loss, vf_loss
+
+    def label_smooth_loss(self, router_results, new_prob, valid_fbs_count, actions_one_hot):
+        """"Add label-smoothing loss."""
+        batch_size = new_prob.shape[0]
+        total_smooth_loss = torch.zeros(1).cuda()
+        action_probs = torch.sum(actions_one_hot * new_prob, axis=-1)
+        for b_i in range(batch_size):
+            num_valid_fbs = valid_fbs_count[b_i]
+            if num_valid_fbs > 1:
+                max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
+                if action_probs[b_i] > max_action_prob:
+                    smooth_actions = torch.zeros(new_prob[b_i])
+                    # Add prob to all valid actions
+                    smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
+                    # Add extra prob to selected action
+                    smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
+                    
+                    smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(new_prob[b_i] + 1e-7), smooth_actions)
+                    total_smooth_loss += smooth_loss
+
+        return total_smooth_loss
+        
