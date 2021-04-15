@@ -190,7 +190,7 @@ class ClassifierTrainer(Trainer):
                             loss += actor_loss + self.args.critic_lam * critic_loss
                             load_balance_loss = 0#self.args.load_bal_lam * self.compute_load_balance_loss(action_prob_sum, action_count) 
                             loss += load_balance_loss
-                            smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs])
+                            smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
                             loss += smooth_loss
                             
                             total_smooth_loss += smooth_loss.detach().cpu().numpy()
@@ -491,21 +491,26 @@ class ClassifierTrainer(Trainer):
 
         return  policy_loss, vf_loss
 
-    def label_smooth_loss(self, router_results, new_prob, valid_fbs_count, actions_one_hot):
+    def label_smooth_loss(self, router_results, new_prob, valid_fbs_count, actions_one_hot, m_batch_idxs):
         """"Add label-smoothing loss."""
         batch_size = new_prob.shape[0]
         total_smooth_loss = torch.zeros(1).cuda()
         action_probs = torch.sum(actions_one_hot * new_prob, axis=-1)
+        
+        b_i_old = m_batch_idxs // self.args.max_depth
+        t_old = m_batch_idxs % self.args.max_depth
         for b_i in range(batch_size):
-            num_valid_fbs = valid_fbs_count[b_i]
+            num_valid_fbs = valid_fbs_count[b_i].int()
             if num_valid_fbs > 1:
                 max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
                 if action_probs[b_i] > max_action_prob:
-                    smooth_actions = torch.zeros(new_prob[b_i])
+                    smooth_actions = torch.zeros_like(new_prob[b_i])
                     # Add prob to all valid actions
                     smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
+
+                    
                     # Add extra prob to selected action
-                    smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
+                    smooth_actions[router_results.action_indices[b_i_old[b_i]][t_old[b_i]]] = max_action_prob
                     
                     smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(new_prob[b_i] + 1e-7), smooth_actions)
                     total_smooth_loss += smooth_loss
