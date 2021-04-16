@@ -160,7 +160,7 @@ class Encoder(nn.Module):
             x: task emb, example emb, used fbs embs
         """
         x *= torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32)).cuda()
-        #x += self.pos_enc[:, :x.shape[1], :]
+        x += self.pos_enc[:, :x.shape[1], :]
         x = self.dropout(x)
 
         # Run through all encoder fb
@@ -188,7 +188,7 @@ class Decoder(nn.Module):
         """
         num_fbs = x.shape[1]
         x *= torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
-        #x += self.pos_enc[:, :num_fbs, :]
+        x += self.pos_enc[:, :num_fbs, :]
         x = self.dropout(x)
         
         att_weights = {}
