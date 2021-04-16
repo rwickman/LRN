@@ -70,13 +70,17 @@ class Trainer(ABC):
         batch_size = len(actions)
         depth = len(actions[0])
         bonus = torch.zeros((batch_size, depth)).cuda()
+        temp_fb_count = self._fb_count.clone()
+        temp_fb_count[PASS_FB] = 0
+        fb_count_max = temp_fb_count.max()
+        fb_count_min = temp_fb_count.min()
         for i in range(batch_size):
             for j in range(depth):
                 #bonus[i][j] += self._fb_count[actions[i][j]]/self._fb_count.sum()#(1 / np.log(self._layer_count[actions[i][j]] + 2))
                 if actions[i][j] == PASS_FB:
                     bonus[i][j] = 0
                 else:
-                    bonus[i][j] += 1 - (self._fb_count[actions[i][j]] - self._fb_count.min()) / (self._fb_count.max() - self._fb_count.min())
+                    bonus[i][j] += 1 - (temp_fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
                 #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
         
 
