@@ -94,12 +94,12 @@ if __name__ == "__main__":
         help="Percentage of validation split.")
     parser.add_argument("--alpha", type=float, default=0.1,
         help="Alpha value used for label smoothing.")
-    parser.add_argument("--smooth_lam", type=float, default=0.1,
+    parser.add_argument("--smooth_lam", type=float, default=1.0,
         help="Weight for action smoothing loss value used for label smoothing.")
 
     parser.add_argument("--eps_clip", type=float, default=0.2,
         help="Epsilon clipping used for PPO.")
-    parser.add_argument("--noptepochs", type=int, default=4,
+    parser.add_argument("--noptepochs", type=int, default=1,
         help="Number of epochs to train batch of episodes")
     parser.add_argument("--nminibatches", type=int, default=4,
         help="Number of minibatches to split the batch of episdoes")

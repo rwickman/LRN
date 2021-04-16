@@ -515,5 +515,5 @@ class ClassifierTrainer(Trainer):
                     smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(new_prob[b_i] + 1e-7), smooth_actions)
                     total_smooth_loss += smooth_loss
 
-        return total_smooth_loss
+        return total_smooth_loss / batch_size
         
