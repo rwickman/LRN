@@ -152,3 +152,54 @@ def create_padding_mask(valid_fbs_batch):
 
         masks[i, mask_start:] = 1
     return torch.reshape(masks, (masks.shape[0], 1, 1, masks.shape[1]))
+
+
+def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_depth, max_fbs):
+    batch_size = len(valid_fbs_ep)
+    num_exs = batch_size * max_depth 
+
+    valid_fbs_ep_pad = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.int64).cuda()
+    valid_fbs_ep_mask = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.int64).cuda()
+    valid_fbs_count = torch.zeros(num_exs)
+
+    # Window the FBs chosen so far
+    actions_window =  torch.zeros(
+        (num_exs, max_depth),
+        dtype=torch.int64).cuda()
+    actions_mask = torch.zeros(
+        (num_exs, max_depth+2),
+        dtype=torch.int64).cuda()
+    
+    
+    # One-hot encoded actions
+    actions_one_hot = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.int64).cuda()
+    action_probs_pad = torch.zeros(
+        (num_exs, max_fbs),
+        dtype=torch.float64).cuda()
+    
+    actions_batch = torch.zeros(num_exs, dtype=torch.int64).cuda()
+    actions = torch.tensor(actions)
+    action_indices = torch.tensor(action_indices, dtype=torch.int64)
+    action_indices = torch.reshape(action_indices, (-1, ))
+
+    for i in range(batch_size):
+        for j in range(max_depth):
+            ex_i = i*max_depth + j
+            actions_mask[ex_i, j+3:] = 1 
+            actions_window[ex_i, :j+1] = actions[i][:j+1]
+            actions_batch[ex_i] = actions[i][j]
+            valid_fbs_ep_pad[ex_i, :len(valid_fbs_ep[i][j])] = torch.tensor(valid_fbs_ep[i][j])
+            valid_fbs_ep_mask[ex_i, :len(valid_fbs_ep[i][j])+1] = 1
+            valid_fbs_count[ex_i] = len(valid_fbs_ep[i][j])
+            
+            actions_one_hot[ex_i, action_indices[ex_i]] = 1
+            action_probs_pad[ex_i, :action_probs[i][j].shape[0]] = action_probs[i][j]
+
+    return actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count, actions_batch
+

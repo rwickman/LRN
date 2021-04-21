@@ -7,13 +7,20 @@ import json, os
 
 from router import Router
 from fb_model import FBModel
+from metaworld_fb_model import MetaWorldFBModel
 from model_util import PASS_FB
 
 class Trainer(ABC):
     
     def __init__(self, args):
         self.args = args
-        self._fb_model = FBModel(self.args).cuda()
+        
+        if self.args.metaworld:
+            self._fb_model = MetaWorldFBModel(self.args).cuda()
+        else:
+            self._fb_model = FBModel(self.args).cuda()
+        
+        
         self._router = Router(self.args, self.args.num_tasks, self._fb_model).cuda()
         print("ROUTER PARAMS: ", sum(p.numel() for p in self._router.parameters()))
         print("FB MODEL PARAMS: ", sum(p.numel() for p in self._fb_model.parameters()))
@@ -66,25 +73,32 @@ class Trainer(ABC):
             adv = (adv - adv.mean()) / adv.std()
             return returns, adv, tdlamret
 
-    def layer_reward_bonus(self, actions):
+    def layer_reward_bonus(self, actions, output_losses_batch):
         batch_size = len(actions)
         depth = len(actions[0])
         bonus = torch.zeros((batch_size, depth)).cuda()
-        temp_fb_count = self._fb_count.clone()
-        temp_fb_count[PASS_FB] = 0
-        fb_count_max = temp_fb_count.max()
-        fb_count_min = temp_fb_count.min()
+        #temp_fb_count = self._fb_count.clone()
+        #temp_fb_count[PASS_FB] = 0
+        #fb_count_max = temp_fb_count.max()
+        #fb_count_min = temp_fb_count.min()
+        total_reward = torch.zeros_like(self._fb_count).cuda()
+        avg_reward = torch.zeros((batch_size, depth)).cuda()
+        
         for i in range(batch_size):
             for j in range(depth):
-                #bonus[i][j] += self._fb_count[actions[i][j]]/self._fb_count.sum()#(1 / np.log(self._layer_count[actions[i][j]] + 2))
-                if actions[i][j] == PASS_FB:
-                    bonus[i][j] = 0
-                else:
-                    bonus[i][j] += 1 - (temp_fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
+                total_reward[actions[i][j]] += output_losses_batch[i]
+        #avg_reward = avg_reward / (temp_fb_count += 1)
+        for i in range(batch_size):
+            for j in range(depth):
+                #bonus[i][j] += 1 - (temp_fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
+                avg_reward[i][j] = total_reward[actions[i][j]] / (self._fb_count[actions[i][j]] + 1)
+                #bonus[i][j] = avg_reward[actions[i][j]]
                 #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
-        
-
-        return bonus
+        #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
+        avg_max = avg_reward.max()
+        avg_min = avg_reward.min()
+        avg_reward = 1 - (avg_reward - avg_min) / (avg_max-avg_min)
+        return avg_reward
 
     def save(self):
         print("Saving models")

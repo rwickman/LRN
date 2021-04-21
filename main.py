@@ -1,5 +1,6 @@
 import argparse
 from classifier_trainer import ClassifierTrainer
+from metaworld_trainer import MetaWorldTrainer
 #from rl_trainer import RLTrainer
 import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
@@ -9,8 +10,12 @@ def main(args):
     if args.run_mnist_benchmarks:
         run_mnist_benchmarks(args)
     else:
-        model_trainer = ClassifierTrainer(args) 
-        model_trainer.train()
+        if args.metaworld:
+            model_trainer = MetaWorldTrainer(args)
+            model_trainer.train()
+        else:
+            model_trainer = ClassifierTrainer(args) 
+            model_trainer.train()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -34,7 +39,7 @@ if __name__ == "__main__":
         help="Latent size of the hidden state.")
     parser.add_argument("--hidden_size", type=int, default=256,
         help="Latent size of the hidden state.")
-    parser.add_argument("--max_depth", type=int, default=3,
+    parser.add_argument("--max_depth", type=int, default=4,
         help="Latent size of the hidden state.")
     parser.add_argument("--lr", type=float, default=1e-4,
         help="Router learning rate.")
@@ -104,5 +109,12 @@ if __name__ == "__main__":
     parser.add_argument("--nminibatches", type=int, default=4,
         help="Number of minibatches to split the batch of episdoes")
 
+
+    parser.add_argument("--metaworld", action="store_true",
+        help="Train on Meta-World MTL10 tasks.")
+    parser.add_argument("--mw_obs_size", type=int, default=39,
+        help="Size of the Meta-World observation")
+    parser.add_argument("--mw_action_space", type=int, default=4,
+        help="Meta-World action space")
 
     main(parser.parse_args())
