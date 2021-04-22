@@ -291,7 +291,22 @@ class Attention(nn.Module):
         fb_probs = F.softmax(u_i, dim=-1)
         return fb_probs
 
-class StateEncoder(nn.Module):
+
+class MuJoCoEncoder(nn.Module):
+    """Encoder for MuJoCo Observation."""
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.fc1 = nn.Linear(self.args.mw_obs_size, self.args.hidden_size//2)
+        self.fc2 = nn.Linear(self.args.hidden_size//2, self.args.hidden_size)
+        self.fc3 =  nn.Linear(self.args.hidden_size, self.args.hidden_size)
+
+    def forward(self, obs):
+        obs = nn.relu(self.fc1(obs))
+        obs = nn.relu(self.fc2(obs))
+        return self.fc3(obs)
+
+class ImgEncoder(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -375,6 +390,7 @@ class Router(nn.Module):
         self.fb_model = fb_model
         self.num_fbs = self.fb_model.get_num_fbs()
         self.num_tasks = num_tasks
+        self._valid_fbs_dict = {}
 
         self.trans_router = TransformerRouter(self.args)
 
@@ -382,7 +398,10 @@ class Router(nn.Module):
 
         self.task_embs = nn.Embedding(self.num_tasks, self.args.hidden_size)
         
-        self.state_encoder = StateEncoder(self.args)
+        if self.args.metaworld:
+            self.state_encoder = MuJoCoEncoder(self.args)
+        else:
+            self.state_encoder = ImgEncoder(self.args)
         
         #self.router_cell = nn.LSTMCell(self.args.hidden_size + self.args.task_emb_size + self.args.hidden_size, self.args.hidden_size)
 
@@ -445,8 +464,10 @@ class Router(nn.Module):
             max_emb_len = 0
 
             for b_i in range(batch_size):
-                valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i)
-
+                if i  == 0:
+                    valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, None)
+                else:
+                    valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, tuple(actions[b_i]))
                 # Perform fb dropout
                 if should_drop_fbs:
                     valid_fbs = self.fb_dropout(valid_fbs)
@@ -531,18 +552,21 @@ class Router(nn.Module):
             max_fbs) 
 
 
-    def _get_valid_fbs(self, builder, fb_emb_indices, cur_depth):
+    def _get_valid_fbs(self, builder, fb_emb_indices, cur_depth, prev_actions):
         # Update the valid fbs
         valid_fbs = []
-        for l_i in fb_emb_indices:
-            if l_i == PASS_FB:
-                fb_l_i = None
-            else:    
-                fb_l_i = self.fb_model.get_fb(l_i)
-            
-            if builder.is_valid_fb(fb_l_i, cur_depth):
-                valid_fbs.append(l_i)
-
+        if (cur_depth, prev_actions) not in self._valid_fbs_dict:
+            for l_i in fb_emb_indices:
+                if l_i == PASS_FB:
+                    fb_l_i = None
+                else:    
+                    fb_l_i = self.fb_model.get_fb(l_i)
+                
+                if builder.is_valid_fb(fb_l_i, cur_depth):
+                    valid_fbs.append(l_i)
+            self._valid_fbs_dict[(cur_depth, prev_actions)] = valid_fbs
+        else:    
+            valid_fbs = self._valid_fbs_dict[(cur_depth, prev_actions)]
         return valid_fbs
     
     def fb_dropout(self, valid_fbs):
