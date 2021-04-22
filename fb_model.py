@@ -90,13 +90,20 @@ class FBModel(nn.Module):
         self.fb_prob_dict = {}
         d = self.args.num_dup_layers
         self.fb_prob_dict["E0"] = 1/d
+
         self.fb_prob_dict["E1"] = 1/2 + (d-1)/(2*d) * (1/(2*d-1))
         self.fb_prob_dict["E2"] = 1/2 + (d-1)/(2*d) * (1/(2*d-1))
         self.fb_prob_dict["E3"] = 1/2 * (1/d)
         self.fb_prob_dict["E4"] = 1/2 * (d/(2*d-1)) * (1/d) + 1/2 * 1 * (1/d)
         self.fb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * (1/d)
-        print("fb_prob_dict", self.fb_prob_dict)
-    
+
+        self.target_prob = torch.zeros(len(self._fbs), 1).cuda()
+
+        for a_i in range(len(self._fbs)):
+            fb_type = self.action_to_fb_type(a_i+1)
+            uni_fb_prob = self.get_fb_prob(fb_type)
+            self.target_prob[a_i] = uni_fb_prob
+
     def action_to_fb_type(self, action):
         if action == PASS_FB:
             return "E"

@@ -334,9 +334,7 @@ class ClassifierTrainer(Trainer):
 
     def compute_load_balance_loss(self, valid_fbs_count, valid_fbs_ep_pad, new_prob, actions_batch):
         kl = torch.nn.KLDivLoss()
-        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-        target_prob = torch.zeros(self._router.num_fbs, 1).cuda()
-        
+        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()        
         batch_size = valid_fbs_ep_pad.shape[0]
         action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
         #total_smooth_loss = torch.zeros(1).cuda()
@@ -349,20 +347,8 @@ class ClassifierTrainer(Trainer):
                 action_prob_sum[a_t] += new_prob[b_i][j]
                 action_count[a_t] += 1
         
-        action_prob_sum = action_prob_sum / action_count
-        
-        # TODO: Precompute this
-        for a_i in range(self._router.num_fbs):
-            fb_type = self._fb_model.action_to_fb_type(a_i+1)
-            uni_fb_prob = self._fb_model.get_fb_prob(fb_type)
-            target_prob[a_i] = uni_fb_prob
-        # print("target_prob", target_prob)
-        # print("action_prob_sum[1:]", action_prob_sum[1:])
-        load_balance_loss = kl(torch.log(action_prob_sum[1:] + 1e-7), target_prob)
-        #load_balance_loss =  torch.sum(action_prob_sum * action_count) * (self._router.num_fbs + 1)
-        
-
-        #load_balance_loss = (self._router.num_fbs * load_balance_loss - 1/self._router.num_fbs)
+        action_prob_sum = action_prob_sum / (action_count + 1)
+        load_balance_loss = kl(torch.log(action_prob_sum[1:] + 1e-7), self._fb_model.target_prob)
         
         return load_balance_loss
 
