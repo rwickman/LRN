@@ -84,9 +84,28 @@ class FBModel(nn.Module):
             )
         
         self._fbs = nn.ModuleList(fbs)
+        self.create_fb_probs()
         
-        
+    def create_fb_probs(self):
+        self.fb_prob_dict = {}
+        d = self.args.num_dup_layers
+        self.fb_prob_dict["E0"] = 1/d
+        self.fb_prob_dict["E1"] = 1/2 + (d-1)/(2*d) * (1/(2*d-1))
+        self.fb_prob_dict["E2"] = 1/2 + (d-1)/(2*d) * (1/(2*d-1))
+        self.fb_prob_dict["E3"] = 1/2 * (1/d)
+        self.fb_prob_dict["E4"] = 1/2 * (d/(2*d-1)) * (1/d) + 1/2 * 1 * (1/d)
+        self.fb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * (1/d)
+        print("fb_prob_dict", self.fb_prob_dict)
     
+    def action_to_fb_type(self, action):
+        if action == PASS_FB:
+            return "E"
+        else:
+            return "E" + str((action-1) % 6)
+    
+    def get_fb_prob(self, fb_type):
+        return self.fb_prob_dict[fb_type]
+
     def get_fb(self, idx):
         return self._fbs[idx-1]
     
