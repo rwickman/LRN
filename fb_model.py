@@ -91,12 +91,14 @@ class FBModel(nn.Module):
         d = self.args.num_dup_layers
         self.fb_prob_dict["E0"] = 1/d
 
-        self.fb_prob_dict["E1"] = 1/2 + (d-1)/(2*d) * (1/(2*d-1))
-        self.fb_prob_dict["E2"] = 1/2 + (d-1)/(2*d) * (1/(2*d-1))
+        self.fb_prob_dict["E1"] = 1/(2*d) + (d-1)/(2*d) * (1/(2*d-1))
+        self.fb_prob_dict["E2"] = 1/(2*d) + d/(2*d) * (1/(2*d-1))
         self.fb_prob_dict["E3"] = 1/2 * (1/d)
         self.fb_prob_dict["E4"] = 1/2 * (d/(2*d-1)) * (1/d) + 1/2 * 1 * (1/d)
         self.fb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * (1/d)
-
+        
+        print(self.fb_prob_dict)
+        
         self.target_prob = torch.zeros(len(self._fbs), 1).cuda()
 
         for a_i in range(len(self._fbs)):
