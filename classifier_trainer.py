@@ -155,105 +155,13 @@ class ClassifierTrainer(Trainer):
                             if self.args.smooth_lam > 0.0:
                                 smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
                                 loss += smooth_loss
-                                total_smooth_loss += smooth_loss.detach().cpu().numpy()
-                                
-                            
-                            
+                                total_smooth_loss += smooth_loss.detach().cpu().numpy()                            
 
                             loss.backward()
                             torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
                             self.optimizer.step()
                             self.optimizer.zero_grad()
 
-                        # Compute loss
-                        # for t in range(self.args.max_depth):
-                            
-                        #     #critic_loss = self.critic_loss_fn(critic_outputs[:, t], tdlamret[:, t].unsqueeze(-1)) * (self.args.max_depth) * self.args.critic_lam
-                        #     #total_critic_loss += critic_loss.detach().cpu().numpy()
-                            
-                        #     #loss += critic_loss
-                        #     #loss += -torch.log(action_probs[t][0][router_results.action_indices[t]]) * adv
-
-                        #     # delta = advs[t] - self.adv_avg[t] 
-                        #     # adv = (advs[t] - self.adv_avg[t]) / self.adv_std[t]**0.5
-                        #     # adv = max(min(3.0, adv), -3.0)                        #         # Add label-smoothing loss
-                        #         num_valid_fbs = len(router_results.valid_fbs_ep[b_i][t])
-                        #         if num_valid_fbs > 1:
-                        #             max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
-                        #             if action_prob > max_action_prob:
-                        #                 smooth_actions = torch.zeros_like(action_probs[b_i][t])#torch.tensor(self.args.alpha).repeat_interleave(num_valid_fbs)
-                        #                 # Add prob to all valid actions
-                        #                 smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
-                        #                 # Add extra prob to selected action
-                        #                 smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
-                        #                 smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(action_probs[b_i][t] + 1e-7), smooth_actions)
-                        #                 loss += smooth_loss
-                        #                 total_smooth_loss += smooth_loss.detach().cpu().numpy()
-                                
-                            
-                        #     # self.adv_std[t] = (1-self.args.adv_alpha) * (self.adv_std[t] + self.args.adv_alpha * delta**2) 
-                        #     # self.adv_avg[t] = self.adv_avg[t] + self.args.adv_alpha * delta 
-                            
-                        #     for b_i in range(self.args.batch_size):
-                        #         action_prob = action_probs[b_i][t][router_results.action_indices[b_i][t]]
-                        #         if action_prob == 0:
-                        #             print("action_probs", action_probs)
-                        #             print("action_probs[b_i][t]", action_probs[b_i][t])
-                        #             print(router_results.action_indices[b_i][t])
-                        #             print(action_prob)
-                        #             assert False
-                                
-                        #         # Add label-smoothing loss
-                        #         num_valid_fbs = len(router_results.valid_fbs_ep[b_i][t])
-                        #         if num_valid_fbs > 1:
-                        #             max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
-                        #             if action_prob > max_action_prob:
-                        #                 smooth_actions = torch.zeros_like(action_probs[b_i][t])#torch.tensor(self.args.alpha).repeat_interleave(num_valid_fbs)
-                        #                 # Add prob to all valid actions
-                        #                 smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
-                        #                 # Add extra prob to selected action
-                        #                 smooth_actions[router_results.action_indices[b_i][t]] = max_action_prob
-                        #                 smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(action_probs[b_i][t] + 1e-7), smooth_actions)
-                        #                 loss += smooth_loss
-                        #                 total_smooth_loss += smooth_loss.detach().cpu().numpy()
-                                
-                        #         # Get prediction for current timestep
-                        #         new_prob, val_pred = self._router.predict_step(
-                        #             imgs[b_i].unsqueeze(0),
-                        #             task_ids[b_i].unsqueeze(0),
-                        #             torch.tensor(router_results.valid_fbs_ep[b_i][t], dtype=torch.int64).cuda(),
-                        #             torch.tensor(actions[b_i][:t], dtype=torch.int64).cuda())
-                        #         actor_loss, critic_loss = self.ppo_loss(
-                        #             advs[b_i][t], 
-                        #             action_prob, 
-                        #             new_prob[0][router_results.action_indices[b_i][t]], 
-                        #             tdlamret[b_i][t].unsqueeze(-1).unsqueeze(-1), 
-                        #             val_pred)
-                        #         # print("action_prob", action_prob)
-                        #         # print("new_prob[router_results.action_indices[b_i][t]]", new_prob[0][router_results.action_indices[b_i][t]]) 
-                        #         # print("ACTOR LOSS, ", actor_loss)
-                        #         # print("critic_loss", critic_loss)
-                        #         actor_loss = actor_loss / self.args.batch_size
-                        #         critic_loss = critic_loss / self.args.batch_size  
-                        #         #actor_loss = -torch.log(action_prob) * advs[b_i][t] / self.args.batch_size 
-                        #         loss += actor_loss + self.args.critic_lam * critic_loss 
-                        #         total_actor_loss += actor_loss.detach().cpu().numpy()
-                        #         total_critic_loss += critic_loss.detach().cpu().numpy()
-
-                        #         action_count[actions[b_i][t]] += 1
-                        #         for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
-                        #             action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * action_probs[b_i][t][j]
-                        #         #enp_loss = -self.args.entropy_lam * action_prob * torch.log(action_prob +1e-10) / self.args.batch_size
-                        #         #total_enp_loss += enp_loss
-                        #         #loss += enp_loss                       
-                        #     # if not router_results.failed and action_probs[t][0][actions[t]] > 0.50 and action_probs[t][0][actions[t]] != 0:
-                        #     #     loss += action_probs[t][0][actions[t]] * 10
-
-                        #     # Add entropy regularization
-                            
-
-
-                        #loss += critic_loss
                         critic_losses.append(total_critic_loss)
                         #print("Entropy loss", -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10)))
 
@@ -341,12 +249,9 @@ class ClassifierTrainer(Trainer):
         
         for b_i in range(batch_size):
             num_valid_fbs = valid_fbs_count[b_i].int()
-            
-            for j in range(num_valid_fbs):
-                a_t = valid_fbs_ep_pad[b_i][j]
-                action_prob_sum[a_t] += new_prob[b_i][j]
-                action_count[a_t] += 1
-        
+            action_prob_sum[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += new_prob[b_i][:num_valid_fbs].unsqueeze(1)
+            action_count[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += 1
+
         action_prob_sum = action_prob_sum / (action_count + 1)
         load_balance_loss = kl(torch.log(action_prob_sum[1:] + 1e-7), self._fb_model.target_prob)
         
