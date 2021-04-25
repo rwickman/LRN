@@ -384,11 +384,11 @@ class Critic(nn.Module):
         return out
 
 class Router(nn.Module):
-    def __init__(self, args, num_tasks, fb_model):
+    def __init__(self, args, num_tasks, get_fb_fn, num_fbs):
         super().__init__()
         self.args = args
-        self.fb_model = fb_model
-        self.num_fbs = self.fb_model.get_num_fbs()
+        self.get_fb_fn = get_fb_fn
+        self.num_fbs = num_fbs
         self.num_tasks = num_tasks
         self._valid_fbs_dict = {}
 
@@ -474,15 +474,12 @@ class Router(nn.Module):
                 valid_fbs_batch.append(torch.tensor(valid_fbs))
                 valid_fbs_ep[b_i].append(valid_fbs)
                 max_fbs = max(max_fbs, len(valid_fbs))
-    
-            
+
             # Add padding
             valid_fbs_batch = pad_sequence(valid_fbs_batch, batch_first=True)
-                    
+
             fb_embs = self.fb_embs(valid_fbs_batch.cuda())
-            fb_masks_batch = create_padding_mask(valid_fbs_batch)
-               
-        
+            fb_masks_batch = create_padding_mask(valid_fbs_batch)        
 
             fb_probs, att_weights = self.trans_router(state, fb_embs, fb_masks_batch)
             #att_weights_list.append(att_weights)
@@ -525,7 +522,7 @@ class Router(nn.Module):
                 if fb_choice != PASS_FB:
                     fb_emb_indices[b_i].remove(fb_choice)
 
-                    cur_fb = self.fb_model.get_fb(fb_choice)
+                    cur_fb = self.get_fb_fn(fb_choice)
 
                     # Verify the builder did not fail
                     assert builders[b_i].attempt_add_fb(cur_fb, i)
@@ -560,7 +557,7 @@ class Router(nn.Module):
                 if l_i == PASS_FB:
                     fb_l_i = None
                 else:    
-                    fb_l_i = self.fb_model.get_fb(l_i)
+                    fb_l_i = self.get_fb_fn(l_i)
                 
                 if builder.is_valid_fb(fb_l_i, cur_depth):
                     valid_fbs.append(l_i)
