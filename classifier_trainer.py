@@ -251,10 +251,14 @@ class ClassifierTrainer(Trainer):
             num_valid_fbs = valid_fbs_count[b_i].int()
             action_prob_sum[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += new_prob[b_i][:num_valid_fbs].unsqueeze(1)
             action_count[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += 1
-
-        action_prob_sum = action_prob_sum / (action_count + 1)
-        load_balance_loss = kl(torch.log(action_prob_sum[1:] + 1e-7), self._fb_model.target_prob)
         
+        # Get probability of each FB over batch
+        action_idxs = action_count.squeeze(-1) > 0
+        action_prob_sum[action_idxs] = action_prob_sum[action_idxs] / action_count[action_idxs]
+
+        # Cross-entropy loss
+        load_balance_loss = -(self._fb_model.target_prob * torch.log(action_prob_sum[1:] + 1e-9)).mean()
+
         return load_balance_loss
 
     def load_data(self):
