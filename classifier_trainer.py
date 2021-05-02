@@ -89,7 +89,7 @@ class ClassifierTrainer(Trainer):
                 
                 model_bce_losses.append(output_losses.tolist())
                 
-                returns, advs, tdlamret = self.compute_return(rewards, action_probs, critic_outputs)
+                returns, advs, tdlamret = self.compute_return(rewards, critic_outputs)
                 advs = torch.reshape(advs, (-1, ))
                 tdlamret = torch.reshape(tdlamret, (-1, ))
 
@@ -240,26 +240,6 @@ class ClassifierTrainer(Trainer):
 
 
 
-    def compute_load_balance_loss(self, valid_fbs_count, valid_fbs_ep_pad, new_prob, actions_batch):
-        kl = torch.nn.KLDivLoss()
-        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()        
-        batch_size = valid_fbs_ep_pad.shape[0]
-        action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-        #total_smooth_loss = torch.zeros(1).cuda()
-        
-        for b_i in range(batch_size):
-            num_valid_fbs = valid_fbs_count[b_i].int()
-            action_prob_sum[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += new_prob[b_i][:num_valid_fbs].unsqueeze(1)
-            action_count[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += 1
-        
-        # Get probability of each FB over batch
-        action_idxs = action_count.squeeze(-1) > 0
-        action_prob_sum[action_idxs] = action_prob_sum[action_idxs] / action_count[action_idxs]
-
-        # Cross-entropy loss
-        load_balance_loss = -(self._fb_model.target_prob * torch.log(action_prob_sum[1:] + 1e-9)).mean()
-
-        return load_balance_loss
 
     def load_data(self):
         self._data_loader = DataLoader(self.args)

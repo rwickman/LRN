@@ -17,11 +17,15 @@ class ModelBuilder:
             return False
 
     def is_valid_fb(self, cur_fb, cur_depth):
+
         if cur_fb is not None:
             cur_layer = cur_fb.layer
         else:
-            cur_layer = None 
-        return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes)
+            cur_layer = None
+        if not self.args.metaworld: 
+            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes)
+        else:
+            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.mw_action_space * 2)
 
     def _update_out_size(self):
         if self._prev_layer is not None:
@@ -41,5 +45,8 @@ class ModelBuilder:
                 raise Exception("Invalid layer.")
         else:
             # There is not a previous layer so set to input size
-            self.cur_out_size = self.args.in_channels
+            if not self.args.metaworld:
+                self.cur_out_size = self.args.in_channels
+            else:
+                self.cur_out_size = self.args.mw_obs_size
         

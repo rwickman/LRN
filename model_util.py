@@ -35,6 +35,8 @@ def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_
         elif isinstance(cur_layer, nn.Conv2d):
             # Check if the current layer is an "input" layer
             return cur_layer.in_channels == out_size
+        elif isinstance(cur_layer, nn.Linear):
+            return cur_layer.in_features == out_size
         else:
             # First layer must be Conv layer
             return False
