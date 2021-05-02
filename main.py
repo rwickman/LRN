@@ -1,6 +1,6 @@
 import argparse
 from classifier_trainer import ClassifierTrainer
-from metaworld_trainer import MetaWorldTrainer
+
 #from rl_trainer import RLTrainer
 import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
@@ -11,6 +11,7 @@ def main(args):
         run_mnist_benchmarks(args)
     else:
         if args.metaworld:
+           from metaworld_trainer import MetaWorldTrainer
            model_trainer = MetaWorldTrainer(args)
            model_trainer.train()
         else:
