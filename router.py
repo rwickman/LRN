@@ -302,8 +302,8 @@ class MuJoCoEncoder(nn.Module):
         self.fc3 =  nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
     def forward(self, obs):
-        obs = nn.relu(self.fc1(obs))
-        obs = nn.relu(self.fc2(obs))
+        obs = F.relu(self.fc1(obs))
+        obs = F.relu(self.fc2(obs))
         return self.fc3(obs)
 
 class ImgEncoder(nn.Module):
@@ -468,6 +468,7 @@ class Router(nn.Module):
                     valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, None)
                 else:
                     valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, tuple(actions[b_i]))
+
                 # Perform fb dropout
                 if should_drop_fbs:
                     valid_fbs = self.fb_dropout(valid_fbs)

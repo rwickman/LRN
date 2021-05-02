@@ -28,6 +28,7 @@ class MetaWorldFBModel(nn.Module):
         super().__init__()
         self.args = args
         self._init_layers()
+        self.create_fb_probs()
 
     def _init_layers(self):
         fbs = []
@@ -59,10 +60,40 @@ class MetaWorldFBModel(nn.Module):
             )
         
         self._fbs = nn.ModuleList(fbs)
+
+    def create_fb_probs(self):
+        self.fb_prob_dict = {}
+        d = self.args.num_dup_layers
+        self.fb_prob_dict["E0"] = 1/d
         
+        for i in range(1, self.args.max_depth-1):
+            # (max_depth -2) FBs of this type will be selected per
+            self.fb_prob_dict[f"E{i}"] = (self.args.max_depth - 2) / (d * ((self.args.max_depth - 2)))
+
+        self.fb_prob_dict[f"E{self.args.max_depth-1}"] = 1/d
+
+        # Create target probability
+        self.target_prob = torch.zeros(len(self._fbs), 1).cuda()
+
+        for a_i in range(len(self._fbs)):
+            fb_type = self.action_to_fb_type(a_i+1)
+            uni_fb_prob = self.get_fb_prob(fb_type)
+            self.target_prob[a_i] = uni_fb_prob
+
+    def action_to_fb_type(self, action):
+        if action == PASS_FB:
+            return "E"
+        else:
+            return "E" + str((action-1) % self.args.max_depth)
+    
+    def get_fb_prob(self, fb_type):
+        return self.fb_prob_dict[fb_type]
+
     def get_fb(self, idx):
         return self._fbs[idx-1]
-    
+
+
+
     def forward(self, x, actions):
         """Forward the batch of inputs through the Function Blocks.
 
@@ -78,25 +109,16 @@ class MetaWorldFBModel(nn.Module):
         actor_actions_logprobs = torch.zeros((batch_size)).cuda()
         for i in range(batch_size):
             cur_x = x[i]
-            print("actions", actions)
             for t, a_t in enumerate(actions[i]):
-                print("t", t)
                 if a_t != PASS_FB:
-                    print("a_t", a_t)
                     cur_fb =  self.get_fb(a_t)
-                    print(cur_fb)
                     cur_x = cur_fb(cur_x)
-            
-            
-            print("cur_x", cur_x)
+
             pi_mean = cur_x[:self.args.mw_action_space]
             pi_std =  torch.diag(cur_x[self.args.mw_action_space:])
-            print("pi_mean", pi_mean)
-            print(pi_std)
             dist = MultivariateNormal(pi_mean, abs(pi_std))
-            print(dist.sample())
             actor_actions[i] = dist.sample()
-            actor_actions_logprobs[i] = dist.log_prob(actions)
+            actor_actions_logprobs[i] = dist.log_prob(actor_actions[i])
 
         return actor_actions, actor_actions_logprobs
 

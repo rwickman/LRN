@@ -9,6 +9,7 @@ from router import Router
 from fb_model import FBModel
 from metaworld_fb_model import MetaWorldFBModel
 from model_util import PASS_FB
+from model_util import window_and_pad
 
 class Trainer(ABC):
     
@@ -48,15 +49,15 @@ class Trainer(ABC):
         pass
 
 
-    def compute_return(self, rewards, action_probs, critic_outputs):
+    def compute_return(self, rewards, critic_outputs):
         with torch.no_grad():
             returns = torch.zeros_like(rewards, dtype=torch.float32).cuda()
-            adv = torch.zeros_like(rewards, dtype=torch.float32).cuda()
+            advs = torch.zeros_like(rewards, dtype=torch.float32).cuda()
             T = len(returns[0])
             for t in reversed(range(T)):
                 if t == T - 1:
                     returns[:, t] = rewards[:, t]
-                    adv[:, t] = returns[:, t] -  critic_outputs[:, t, 0].detach()
+                    advs[:, t] = returns[:, t] -  critic_outputs[:, t, 0].detach()
                 else:
                     returns[:, t] = rewards[:, t] + self.args.gamma * returns[:, t+1]
 
@@ -64,14 +65,36 @@ class Trainer(ABC):
                     delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1, 0].detach() -  critic_outputs[:, t, 0].detach()
                     
                     # GAE
-                    adv[:, t] = delta + self.args.gamma * self.args.gae_lam * adv[:, t+1]
-                    #adv[t] = returns[t] - critic_outputs[t].detach()
+                    advs[:, t] = delta + self.args.gamma * self.args.gae_lam * advs[:, t+1]
+                    #advs[t] = returns[t] - critic_outputs[t].detach()
             
-            tdlamret = adv + critic_outputs[:, :, 0].detach()
+            tdlamret = advs + critic_outputs[:, :, 0].detach()
 
             # Standardize advantages
-            adv = (adv - adv.mean()) / adv.std()
-            return returns, adv, tdlamret
+            advs = (advs - advs.mean()) / advs.std()
+            return returns, advs, tdlamret
+
+
+    def compute_load_balance_loss(self, valid_fbs_count, valid_fbs_ep_pad, new_prob, actions_batch):
+        kl = torch.nn.KLDivLoss()
+        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()        
+        batch_size = valid_fbs_ep_pad.shape[0]
+        action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+        #total_smooth_loss = torch.zeros(1).cuda()
+        
+        for b_i in range(batch_size):
+            num_valid_fbs = valid_fbs_count[b_i].int()
+            action_prob_sum[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += new_prob[b_i][:num_valid_fbs].unsqueeze(1)
+            action_count[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += 1
+        
+        # Get probability of each FB over batch
+        action_idxs = action_count.squeeze(-1) > 0
+        action_prob_sum[action_idxs] = action_prob_sum[action_idxs] / action_count[action_idxs]
+
+        # Cross-entropy loss
+        load_balance_loss = -(self._fb_model.target_prob * torch.log(action_prob_sum[1:] + 1e-9)).mean()
+
+        return load_balance_loss
 
     # def layer_reward_bonus(self, actions, output_losses_batch):
     #     batch_size = len(actions)
@@ -153,6 +176,87 @@ class Trainer(ABC):
         #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
         return bonus
 
+    def train_router(self, valid_fbs_ep, actions, action_indices, action_probs, max_fbs, x_batch_steps, task_ids_steps, returns, advs, tdlamret):
+        critic_losses = []
+        actor_losses = []
+        load_balance_losses = []
+
+        actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count, actions_batch = window_and_pad(
+            valid_fbs_ep,
+            actions,
+            action_indices,
+            action_probs,
+            self.args.max_depth,
+            max_fbs)
+
+        # imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
+        # task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
+        num_exs = len(valid_fbs_ep)#self.args.batch_size
+
+        with torch.autograd.set_detect_anomaly(True):
+            total_critic_loss = 0
+            total_actor_loss = 0
+            total_load_balance_loss = 0
+            for e_i in range(self.args.noptepochs):
+                batch_ids = torch.randperm(num_exs)
+                loss = torch.zeros(1).cuda()
+
+                total_smooth_loss = 0
+                
+                #advs = torch.clamp(advs, min=-3, max=3)
+                #critic_loss = self.critic_loss_fn(critic_outputs, tdlamret) * self.args.critic_lam
+                #print("CRITIC LOSS", critic_loss)
+                
+                # Fraction of probability allocated to layer over batch
+
+
+                # Fraction of tasks allocated to layer over batch
+                action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+
+                for m_i in range(self.args.nminibatches):
+                    loss = torch.zeros(1).cuda()
+                    start = m_i * (num_exs // self.args.nminibatches)
+                    end = (m_i + 1) * (num_exs // self.args.nminibatches)
+                    m_batch_idxs = batch_ids[start:end]
+                    # Get prediction for current timestep
+                    new_prob, val_pred = self._router.predict_step(
+                        x_batch_steps[m_batch_idxs],
+                        task_ids_steps[m_batch_idxs],
+                        valid_fbs_ep_pad[m_batch_idxs],
+                        actions_window[m_batch_idxs],
+                        actions_mask[m_batch_idxs])
+                    
+                    actor_loss, critic_loss = self.ppo_loss(
+                        advs[m_batch_idxs], 
+                        action_probs_pad[m_batch_idxs], 
+                        new_prob, 
+                        tdlamret[m_batch_idxs], 
+                        val_pred,
+                        actions_one_hot[m_batch_idxs])
+
+                    
+                    total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
+                    total_actor_loss += actor_loss.detach().cpu().numpy()
+                    loss += actor_loss + self.args.critic_lam * critic_loss
+                    load_balance_loss = self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
+                    total_load_balance_loss += load_balance_loss.detach().cpu().numpy()
+                    loss += load_balance_loss                          
+
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+                critic_losses.append(total_critic_loss)
+                actor_losses.append(total_actor_loss)
+                load_balance_losses.append(total_load_balance_loss)
+
+        
+        print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
+        print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
+        print("critic_losses", critic_losses)
+        return actor_losses, critic_losses, load_balance_losses
+
     def save(self):
         print("Saving models")
         model_dict = {
@@ -198,3 +302,37 @@ class Trainer(ABC):
                 self._fb_count = torch.tensor(json.load(f))
 
 
+    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions_one_hot):
+        """PPO discreate loss function.
+        Args:
+            advantage: advantage from the episode.
+            old_pred: old softmax predictions.
+            y_true: one-hot encoded actions taken in the episode.
+            y_pred: new softmax predictions.
+            val_true: true values (i.e., returns) from the episode.
+            val_pred: critic value predictions
+        
+        Returns:
+            A tuple of PPO loss and value MSE loss 
+        """
+        new_prob = torch.log(torch.sum(actions_one_hot * new_prob, axis=-1))
+        old_prob = torch.log(torch.sum(actions_one_hot * old_prob, axis=-1))
+
+        # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
+        ratio = torch.exp(new_prob - old_prob.detach())
+
+        surrogate_1 = ratio * adv
+
+        # Clipped policy gradient, ratio clipped between [0.8, 1.2]
+        surrogate_2 = torch.clip(ratio, 1.0 - self.args.eps_clip, 1.0 + self.args.eps_clip) * adv
+
+        # Entropy regularization
+        #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
+        entropy_pen = 0
+        # PPO loss, averaged over several batches
+        policy_loss = -torch.mean(torch.min(surrogate_1, surrogate_2))
+
+        # Value loss (MSE)
+        vf_loss = self.critic_loss_fn(val_pred.squeeze(-1), val_true)
+
+        return  policy_loss, vf_loss
