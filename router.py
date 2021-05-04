@@ -298,8 +298,8 @@ class MuJoCoEncoder(nn.Module):
         super().__init__()
         self.args = args
         self.fc1 = nn.Linear(self.args.mw_obs_size, self.args.hidden_size//2)
-        self.fc2 = nn.Linear(self.args.hidden_size//2, self.args.hidden_size)
-        self.fc3 =  nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.fc2 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.fc3 =  nn.Linear(self.args.hidden_size//2, self.args.hidden_size)
 
     def forward(self, obs):
         obs = F.relu(self.fc1(obs))
@@ -339,19 +339,11 @@ class ImgEncoder(nn.Module):
         return self.fc1(state)
 
 
-# class Critic(nn.Module):
-#     def __init__(args):
-#         self.critic_cell = nn.LSTMCell(self.args.hidden_size + self.args.task_emb_size, 1)
-#         self.dense_out = nn.Dense(1)
-    
-#     def forward(self, x, h_t, c_t):
-#         self.critic_cell
-
 class Critic(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.critic_encoder = Encoder(self.args, 1)
+        self.critic_encoder = Encoder(self.args, self.args.num_enc_layers)
 
         #self.critic_out1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
         self.critic_out1 = nn.Linear(self.args.hidden_size, 1)
@@ -378,9 +370,9 @@ class Critic(nn.Module):
 
         # Perform weight combination
         comb_state = torch.matmul(state_att.transpose(2,1), enc_output)
-
         out = self.critic_out2(F.relu(comb_state))
-        out = out.squeeze(-1)
+
+        #out = out.squeeze(-1)
         return out
 
 class Router(nn.Module):
@@ -402,13 +394,8 @@ class Router(nn.Module):
             self.state_encoder = MuJoCoEncoder(self.args)
         else:
             self.state_encoder = ImgEncoder(self.args)
-        
-        #self.router_cell = nn.LSTMCell(self.args.hidden_size + self.args.task_emb_size + self.args.hidden_size, self.args.hidden_size)
-
-        # self.critic_cell = nn.LSTMCell(self.args.hidden_size + self.args.hidden_size + self.args.hidden_size, self.args.hidden_size)
-        # self.critic_out = nn.Linear(self.args.hidden_size, 1)
+                
         self.critic = Critic(self.args)
-        #self.att = Attention(self.args)
 
 
     def forward(self, imgs, task_id, argmax=False, should_drop_fbs=True):
@@ -488,7 +475,7 @@ class Router(nn.Module):
             # Compute critic output
             # inp = torch.stack((enc_state, task_emb, fb_emb_choice), 1)
             v_t = self.critic(state)
-            critic_outputs[:, i] = v_t
+            critic_outputs[:, i] = v_t.squeeze(-1)
             # h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
             # v_t = self.critic_out(F.relu(h_t_critic))
             # critic_outputs[:, i] = v_t
@@ -603,7 +590,7 @@ class Router(nn.Module):
             state = torch.cat((state, fb_actions_embs), 1)
 
         val_pred = self.critic(state, actions_mask)
-        
+
         # At the end v_t will contain the final critic output
         # Get FB embeddings
         valid_fbs = valid_fbs

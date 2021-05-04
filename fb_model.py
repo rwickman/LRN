@@ -131,12 +131,12 @@ class FBModel(nn.Module):
             self.fb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * ((d-2) / (2*d - 2)) * ((d-3) / (2*d - 3)) * (1/d) 
         print(self.fb_prob_dict)
         
-        self.target_prob = torch.zeros(len(self._fbs), 1).cuda()
+        self.target_prob = torch.zeros(len(self._fbs)+1, 1).cuda()
 
         for a_i in range(len(self._fbs)):
             fb_type = self.action_to_fb_type(a_i+1)
             uni_fb_prob = self.get_fb_prob(fb_type)
-            self.target_prob[a_i] = uni_fb_prob
+            self.target_prob[a_i+1] = uni_fb_prob
 
     def action_to_fb_type(self, action):
         if action == PASS_FB:

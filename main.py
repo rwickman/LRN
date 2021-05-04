@@ -11,7 +11,7 @@ def main(args):
         run_mnist_benchmarks(args)
     else:
         if args.metaworld:
-           from metaworld_trainer import MetaWorldTrainer
+           from cartpole_trainer import MetaWorldTrainer
            model_trainer = MetaWorldTrainer(args)
            model_trainer.train()
         else:
@@ -100,11 +100,13 @@ if __name__ == "__main__":
         help="Percentage of validation split.")
     parser.add_argument("--alpha", type=float, default=0.1,
         help="Alpha value used for label smoothing.")
-    parser.add_argument("--smooth_lam", type=float, default=1.0,
+    parser.add_argument("--smooth_lam", type=float, default=0.0,
         help="Weight for action smoothing loss value used for label smoothing.")
 
     parser.add_argument("--eps_clip", type=float, default=0.2,
         help="Epsilon clipping used for PPO.")
+    parser.add_argument("--val_clip", type=float, default=0.2,
+        help="Value clipping used for PPO.")
     parser.add_argument("--noptepochs", type=int, default=1,
         help="Number of epochs to train batch of episodes")
     parser.add_argument("--nminibatches", type=int, default=4,

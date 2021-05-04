@@ -48,8 +48,8 @@ class ClassifierTrainer(Trainer):
                 imgs = np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
                 imgs = torch.tensor(imgs).cuda()
                 target = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2].astype(int), dtype=torch.int64).unsqueeze(1).cuda()
-
-                router_results = self._router(imgs, task_ids)
+                with torch.no_grad():
+                    router_results = self._router(imgs, task_ids)
                 action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
 
 
@@ -105,7 +105,7 @@ class ClassifierTrainer(Trainer):
                 imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
                 task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
                 num_exs = self.args.max_depth * self.args.batch_size
-
+                critic_outputs = critic_outputs.reshape(-1,1)
                 with torch.autograd.set_detect_anomaly(True):
                     total_critic_loss = 0
                     total_actor_loss = 0
@@ -137,14 +137,15 @@ class ClassifierTrainer(Trainer):
                                 valid_fbs_ep_pad[m_batch_idxs],
                                 actions_window[m_batch_idxs],
                                 actions_mask[m_batch_idxs])
-                            
+    
                             actor_loss, critic_loss = self.ppo_loss(
                                 advs[m_batch_idxs], 
                                 action_probs_pad[m_batch_idxs], 
                                 new_prob, 
                                 tdlamret[m_batch_idxs], 
                                 val_pred,
-                                actions_one_hot[m_batch_idxs])
+                                actions_one_hot[m_batch_idxs],
+                                critic_outputs[m_batch_idxs])
 
                             
                             total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
@@ -152,10 +153,10 @@ class ClassifierTrainer(Trainer):
                             loss += actor_loss + self.args.critic_lam * critic_loss
                             load_balance_loss =self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
                             loss += load_balance_loss
-                            if self.args.smooth_lam > 0.0:
-                                smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
-                                loss += smooth_loss
-                                total_smooth_loss += smooth_loss.detach().cpu().numpy()                            
+                            # if self.args.smooth_lam > 0.0:
+                            #     smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
+                            #     loss += smooth_loss
+                            #     total_smooth_loss += smooth_loss.detach().cpu().numpy()                            
 
                             loss.backward()
                             torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
@@ -328,40 +329,40 @@ class ClassifierTrainer(Trainer):
         self._fb_model.train()
         return test_f1_score, test_acc_score, load_bal_loss, action_entropy, num_unused_fbs
 
-    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions_one_hot):
-        """PPO discreate loss function.
-        Args:
-            advantage: advantage from the episode.
-            old_pred: old softmax predictions.
-            y_true: one-hot encoded actions taken in the episode.
-            y_pred: new softmax predictions.
-            val_true: true values (i.e., returns) from the episode.
-            val_pred: critic value predictions
+    # def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions_one_hot):
+    #     """PPO discreate loss function.
+    #     Args:
+    #         advantage: advantage from the episode.
+    #         old_pred: old softmax predictions.
+    #         y_true: one-hot encoded actions taken in the episode.
+    #         y_pred: new softmax predictions.
+    #         val_true: true values (i.e., returns) from the episode.
+    #         val_pred: critic value predictions
         
-        Returns:
-            A tuple of PPO loss and value MSE loss 
-        """
-        new_prob = torch.log(torch.sum(actions_one_hot * new_prob, axis=-1))
-        old_prob = torch.log(torch.sum(actions_one_hot * old_prob, axis=-1))
+    #     Returns:
+    #         A tuple of PPO loss and value MSE loss 
+    #     """
+    #     new_prob = torch.log(torch.sum(actions_one_hot * new_prob, axis=-1))
+    #     old_prob = torch.log(torch.sum(actions_one_hot * old_prob, axis=-1))
 
-        # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
-        ratio = torch.exp(new_prob - old_prob.detach())
+    #     # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
+    #     ratio = torch.exp(new_prob - old_prob.detach())
 
-        surrogate_1 = ratio * adv
+    #     surrogate_1 = ratio * adv
 
-        # Clipped policy gradient, ratio clipped between [0.8, 1.2]
-        surrogate_2 = torch.clip(ratio, 1.0 - self.args.eps_clip, 1.0 + self.args.eps_clip) * adv
+    #     # Clipped policy gradient, ratio clipped between [0.8, 1.2]
+    #     surrogate_2 = torch.clip(ratio, 1.0 - self.args.eps_clip, 1.0 + self.args.eps_clip) * adv
 
-        # Entropy regularization
-        #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
-        entropy_pen = 0
-        # PPO loss, averaged over several batches
-        policy_loss = -torch.mean(torch.min(surrogate_1, surrogate_2))
+    #     # Entropy regularization
+    #     #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
+    #     entropy_pen = 0
+    #     # PPO loss, averaged over several batches
+    #     policy_loss = -torch.mean(torch.min(surrogate_1, surrogate_2))
 
-        # Value loss (MSE)
-        vf_loss = self.critic_loss_fn(val_pred.squeeze(-1), val_true)
+    #     # Value loss (MSE)
+    #     vf_loss = self.critic_loss_fn(val_pred.squeeze(-1), val_true)
 
-        return  policy_loss, vf_loss
+    #     return  policy_loss, vf_loss
 
     def label_smooth_loss(self, router_results, new_prob, valid_fbs_count, actions_one_hot, m_batch_idxs):
         """"Add label-smoothing loss."""
