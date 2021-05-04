@@ -59,8 +59,8 @@ class MultiHeadAttention(nn.Module):
         scaled_att = torch.reshape(scaled_att, (batch_size, -1, self.args.hidden_size))
 
         # Combine the MHA for each embedding
-        out = self.mha_W(scaled_att).squeeze(0)
-
+        
+        out = self.mha_W(scaled_att)
         return out, att_weights
 
 class PointWiseFFN(nn.Module):
@@ -221,7 +221,8 @@ class TransformerRouter(nn.Module):
         
         dec_output, att_weights = self.decoder(fb_embs, enc_output, fb_mask)
         # batch size, len(fb_embs)
-        actor_out = self.actor_out1(dec_output).squeeze(-1)
+        actor_out = self.actor_out1(dec_output)
+        actor_out = actor_out.view(actor_out.shape[0], actor_out.shape[1])
         #actor_out = self.actor_out2(actor_out).squeeze(-1)
         if fb_mask is not None:
             actor_out += torch.reshape(fb_mask, (fb_mask.shape[0], fb_mask.shape[-1])) * -1e9
@@ -298,8 +299,8 @@ class MuJoCoEncoder(nn.Module):
         super().__init__()
         self.args = args
         self.fc1 = nn.Linear(self.args.mw_obs_size, self.args.hidden_size//2)
-        self.fc2 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
-        self.fc3 =  nn.Linear(self.args.hidden_size//2, self.args.hidden_size)
+        self.fc2 = nn.Linear(self.args.hidden_size//2, self.args.hidden_size)
+        self.fc3 =  nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
     def forward(self, obs):
         obs = F.relu(self.fc1(obs))
