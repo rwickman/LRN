@@ -49,7 +49,7 @@ if __name__ == "__main__":
         help="Router learning rate decay gamma.")
     parser.add_argument("--fb_lr", type=float, default=1e-2,
         help="Output model learning rate.")
-    parser.add_argument("--fb_lr_gamma", type=float, default=0.99,
+    parser.add_argument("--fb_lr_gamma", type=float, default=0.95,
         help="Output modellearning rate decay gamma.")
 
     parser.add_argument("--batch_size", type=int, default=32,
