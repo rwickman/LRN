@@ -27,7 +27,9 @@ class Trainer(ABC):
         print("FB MODEL PARAMS: ", sum(p.numel() for p in self._fb_model.parameters()))
         
         self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
+        self._lr_scheduler = optim.lr_scheduler.MultiplicativeLR(self.optimizer, lr_lambda=lambda e: self.args.lr_gamma)
         self.fb_optim = optim.Adam(self._fb_model.parameters(), lr=self.args.fb_lr)
+        self._fb_lr_scheduler = optim.lr_scheduler.MultiplicativeLR(self.fb_optim, lr_lambda=lambda e: self.args.fb_lr_gamma)
         self.adv_avg = torch.zeros(self.args.max_depth).cuda()
         self.adv_std = torch.ones(self.args.max_depth).cuda()
         self.critic_loss_fn = nn.SmoothL1Loss()
@@ -221,7 +223,7 @@ class Trainer(ABC):
                         tdlamret[m_batch_idxs], 
                         val_pred,
                         actions_one_hot[m_batch_idxs],
-                        critic_outputs[m_batch_idxs])
+                        critic_outputs[m_batch_idxs].unsqueeze(-1))
 
                     
 
@@ -260,6 +262,8 @@ class Trainer(ABC):
             "fb_model" : self._fb_model.state_dict(),
             "fb_optim" : self.fb_optim.state_dict(),
             "optimizer" : self.optimizer.state_dict(),
+            "router_lr_scheduler" : self._lr_scheduler.state_dict(),
+            "fb_lr_scheduler" : self._fb_lr_scheduler.state_dict(),
             "adv_avg" : self.adv_avg,
             "adv_std" : self.adv_std
         }
@@ -283,10 +287,14 @@ class Trainer(ABC):
         self._router.load_state_dict(model_dict["router"])
         self._fb_model.load_state_dict(model_dict["fb_model"])
         self.fb_optim.load_state_dict(model_dict["fb_optim"])
+        self._lr_scheduler.load_state_dict(model_dict["router_lr_scheduler"])
+        self._fb_lr_scheduler.load_state_dict(model_dict["fb_lr_scheduler"])
 
         self.optimizer.load_state_dict(model_dict["optimizer"])
         self.adv_avg = model_dict["adv_avg"]
         self.adv_std = model_dict["adv_std"]
+
+
 
         self.test_results = {}
         with open(os.path.join(self.args.save_dir, self.args.test_results), "r") as f:
@@ -330,20 +338,18 @@ class Trainer(ABC):
         # Value loss (MSE)
         val_true = val_true.unsqueeze(-1).unsqueeze(-1)
 
-        #val_pred = val_pred.squeeze(-1)
-
         old_val_pred =old_val_pred.unsqueeze(-1)
 
         val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
 
         # Unclipped value loss
         vf_losses1 = torch.square(val_pred - val_true)
-        
+
         # Clipped value loss
         vf_losses2 = torch.square(val_pred_clipped - val_true)
         vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
 
         
         #vf_loss = self.critic_loss_fn(val_pred, val_true)
-        print("policy_loss", policy_loss, "vf_loss", vf_loss)
+        #print("policy_loss", policy_loss, "vf_loss", vf_loss)
         return  policy_loss, vf_loss

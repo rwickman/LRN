@@ -28,8 +28,9 @@ class ClassifierTrainer(Trainer):
         critic_losses = []
         model_bce_losses = []
 
-        #self.train_data = self.train_data[:2048]
-        #self.test_data = self.test_data[:512]
+        # np.random.shuffle(self.train_data)
+        # self.train_data = self.train_data[:1024]
+        #self.test_data = self.test_data[:128]
         
         for epoch in range(self.args.epochs):
             np.random.shuffle(self.train_data)
@@ -160,10 +161,14 @@ class ClassifierTrainer(Trainer):
 
                             loss.backward()
                             torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
+                            #print("self._router.critic.critic_out1.weight.grad.max()", self._router.critic.critic_out1.weight.grad.max())
+                            #print("self._router.critic.critic_out2.weight.grad.max()", self._router.critic.critic_out2.weight.grad.max())
+                            #print("self._router.trans_router.actor_out1.weight.grad.max()", self._router.trans_router.actor_out1.weight.grad.max())
                             self.optimizer.step()
                             self.optimizer.zero_grad()
 
                         critic_losses.append(total_critic_loss)
+                        
                         #print("Entropy loss", -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10)))
 
                         # Update router model
@@ -204,6 +209,12 @@ class ClassifierTrainer(Trainer):
 
             self.save()
 
+            # Decrease learning rate
+            self._lr_scheduler.step()
+            self._fb_lr_scheduler.step()
+            for param_group in self.fb_optim.param_groups:
+                print(param_group["lr"])
+            #print("self.optimizer.lr", self._optimizer.lr)
         for pair in sorted(list(action_sets.items()), key=lambda a: a[1]):
             print(pair)
         

@@ -12,6 +12,7 @@ def main(args):
     else:
         if args.metaworld:
            from cartpole_trainer import MetaWorldTrainer
+           #from metaworld_trainer import MetaWorldTrainer
            model_trainer = MetaWorldTrainer(args)
            model_trainer.train()
         else:
@@ -42,10 +43,15 @@ if __name__ == "__main__":
         help="Latent size of the hidden state.")
     parser.add_argument("--max_depth", type=int, default=4,
         help="Latent size of the hidden state.")
-    parser.add_argument("--lr", type=float, default=1e-4,
+    parser.add_argument("--lr", type=float, default=1e-3,
         help="Router learning rate.")
-    parser.add_argument("--fb_lr", type=float, default=1e-4,
+    parser.add_argument("--lr_gamma", type=float, default=0.95,
+        help="Router learning rate decay gamma.")
+    parser.add_argument("--fb_lr", type=float, default=1e-2,
         help="Output model learning rate.")
+    parser.add_argument("--fb_lr_gamma", type=float, default=0.99,
+        help="Output modellearning rate decay gamma.")
+
     parser.add_argument("--batch_size", type=int, default=32,
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.1,
