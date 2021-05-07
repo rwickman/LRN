@@ -79,7 +79,7 @@ def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_
                 return out_size == cur_layer.in_features and cur_layer.out_features == num_classes
         elif cur_layer is None:
             # Only use PASS_LAYER if not at last depth or already added last layer
-            return cur_depth < max_depth - 1 or prev_layer.out_features == num_classes
+            return (cur_depth < max_depth - 1 and not not_shorter_depth) or prev_layer.out_features == num_classes
         else:
             raise Exception("Invalid layers.")
     else:
