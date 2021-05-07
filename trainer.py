@@ -92,12 +92,80 @@ class Trainer(ABC):
         # Get probability of each FB over batch
         action_idxs = action_count.squeeze(-1) > 0
         action_prob_sum[action_idxs] = action_prob_sum[action_idxs] / action_count[action_idxs]
-        #print("action_prob_prob[1:]", action_prob_sum[1:], "action_prob_sum.sum()", action_prob_sum.sum())
+        #print("action_prob_prob", action_prob_sum, "action_prob_sum.sum()", action_prob_sum.sum())
         #print("self._fb_model.target_prob", self._fb_model.target_prob, "self._fb_model.target_prob.sum()", self._fb_model.target_prob.sum())
         # Cross-entropy loss
         load_balance_loss = torch.mean(-self._fb_model.target_prob * torch.log(action_prob_sum + 1e-9))
         #print("load_balance_loss", load_balance_loss)
         return load_balance_loss
+
+    def layer_reward_bonus(self, actions, output_losses_batch):
+        import time
+        start_layer_time  = time.time()
+        batch_size = len(actions)
+        depth = len(actions[0])
+        bonus = torch.zeros((batch_size, depth)).cuda()
+        temp_fb_count = self._fb_count.clone()
+        temp_fb_count[PASS_FB] = 0
+        fb_count_max = temp_fb_count.max()
+        fb_count_min = temp_fb_count.min()
+        
+        # 1. Get counts for type
+        # 2. If not all equal:
+            # a. Give negative reward to one with most count
+            # b. Give positive reward to one with least count
+            # (Consider in future make this some sort of gradient)
+        # Iterate over actions, and assign the reward based on the fb_bonus
+        fb_bonus = torch.zeros(self._router.num_fbs)
+        fb_type_counts = torch.zeros(self._fb_model.num_fb_types, self.args.num_dup_layers)
+        for a_i in range(1, self._router.num_fbs+1):
+            fb_type = (a_i-1) % self._fb_model.num_fb_types
+            dup_num = (a_i-1)//self._fb_model.num_fb_types
+            #print(fb_type, dup_num, a_i)
+            fb_type_counts[fb_type, dup_num] = self._fb_count[a_i]
+        
+        #print("fb_type_counts", fb_type_counts)
+        
+        fb_maxes = fb_type_counts.argmax(axis=1)
+        
+        fb_type_sums = fb_type_counts.sum(axis=1).unsqueeze(1)
+        # print("fb_maxes", fb_maxes)
+        # print("fb_type_sums", fb_type_sums)
+        # print("fb_type_counts", fb_type_counts)
+        fb_type_avgs = fb_type_counts / fb_type_sums
+
+        #print("fb_type_avgs", fb_type_avgs)
+            # self._fb_count[a_i]
+        
+        for i in range(batch_size):
+            for j in range(depth):
+                if actions[i][j] == 0:
+                    continue
+                fb_type = (actions[i][j]-1) % self._fb_model.num_fb_types
+                dup_num = (actions[i][j]-1)//self._fb_model.num_fb_types
+                #print("fb_type", fb_type, "fb_maxes[fb_type]", fb_maxes[fb_type], "dup_num", dup_num)
+                if fb_type_avgs[fb_type, dup_num] > 1/self.args.num_dup_layers + 0.1:
+                    bonus[i][j] = -1#actions[i][j]
+                else:
+                    bonus[i][j] = 1
+        # print("fb_maxes", fb_maxes)
+        # print("self._fb_count", self._fb_count)
+        # print("bonus", bonus)
+        #for i in range(batch_size):
+        #    for j in range(depth):
+        #        total_reward[actions[i][j]] += output_losses_batch[i]
+        #avg_reward = avg_reward / (temp_fb_count += 1)
+        #for i in range(batch_size):
+        #    for j in range(depth):
+        #        if actions[i][j] != PASS_FB:
+        #            bonus[i][j] += 1 - (temp_fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
+                
+                #bonus[i][j] = avg_reward[actions[i][j]]
+                #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
+        #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
+        #print("Total time", time.time() - start_layer_time)
+        return bonus
+
 
     # def layer_reward_bonus(self, actions, output_losses_batch):
     #     batch_size = len(actions)
@@ -108,76 +176,51 @@ class Trainer(ABC):
     #     fb_count_max = temp_fb_count.max()
     #     fb_count_min = temp_fb_count.min()
         
-    #     for i in range(batch_size):
-    #         for j in range(depth):
-    #             total_reward[actions[i][j]] += output_losses_batch[i]
-    #     #avg_reward = avg_reward / (temp_fb_count += 1)
+    #     # Will need to calculate two things:
+    #     # 1. (num times used / # eps) for each action
+    #         # a. ANS: fb_count / batch_Size
+    #     # 2. P(not used at all)
+    #         # a. How to know if a layer 
+
     #     for i in range(batch_size):
     #         for j in range(depth):
     #             if actions[i][j] != PASS_FB:
-    #                 bonus[i][j] += 1 - (temp_fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
-                
+    #                 fb_type = self._fb_model.action_to_fb_type(actions[i][j])
+    #                 # Get the probability that equals the uniform sampling of this FB 
+    #                 uni_fb_prob = self._fb_model.get_fb_prob(fb_type)
+    #                 cur_fb_prob = self._fb_count[actions[i][j]] / batch_size
+    #                 log_loss = -(uni_fb_prob * torch.log(cur_fb_prob + 1e-5) + (1-uni_fb_prob) * torch.log((1-cur_fb_prob) + 1e-5) )
+    #                 prob_diff = (uni_fb_prob - cur_fb_prob)
+    #                 if abs(prob_diff) <= 0.05:
+    #                     bonus[i][j] += 1
+    #                 elif prob_diff < 0:
+    #                     bonus[i][j] += -log_loss
+    #                 else:
+    #                     bonus[i][j] += 1 - log_loss
+
+
+    #                 #log_loss = -(uni_fb_prob * torch.log(cur_fb_prob + 1e-5) + (1-uni_fb_prob) * torch.log((1-cur_fb_prob) + 1e-5) )
+    #                 #bonus[i][j] += -log_loss#bonus[i][j]
+    #             else:
+    #                 bonus[i][j] += -5
+    #                 # prob_diff = (uni_fb_prob - cur_fb_prob)**
+    #                 # if abs(prob_diff) < 0.1:
+    #                 #     bonus[i][j] += 5
+    #                 # else:     
+    #                 #     bonus[i][j] += -5
+                    
+    #             #         if cur_fb_prob < uni_fb_prob:
+                        
+    #             # else:
+    #             #     bonus[i][j] += -5
+    #                 # if cur_fb_prob <= uni_fb_prob:
+    #                 #     bonus[i][j] += (1 - (uni_fb_prob - cur_fb_prob)) * 5
+    #                 # else:
+    #                 #      bonus[i][j] += (uni_fb_prob - cur_fb_prob) * 5
     #             #bonus[i][j] = avg_reward[actions[i][j]]
     #             #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
     #     #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
-
     #     return bonus
-
-
-    def layer_reward_bonus(self, actions, output_losses_batch):
-        batch_size = len(actions)
-        depth = len(actions[0])
-        bonus = torch.zeros((batch_size, depth)).cuda()
-        temp_fb_count = self._fb_count.clone()
-        temp_fb_count[PASS_FB] = 0
-        fb_count_max = temp_fb_count.max()
-        fb_count_min = temp_fb_count.min()
-        
-        # Will need to calculate two things:
-        # 1. (num times used / # eps) for each action
-            # a. ANS: fb_count / batch_Size
-        # 2. P(not used at all)
-            # a. How to know if a layer 
-
-        for i in range(batch_size):
-            for j in range(depth):
-                if actions[i][j] != PASS_FB:
-                    fb_type = self._fb_model.action_to_fb_type(actions[i][j])
-                    # Get the probability that equals the uniform sampling of this FB 
-                    uni_fb_prob = self._fb_model.get_fb_prob(fb_type)
-                    cur_fb_prob = self._fb_count[actions[i][j]] / batch_size
-                    log_loss = -(uni_fb_prob * torch.log(cur_fb_prob + 1e-5) + (1-uni_fb_prob) * torch.log((1-cur_fb_prob) + 1e-5) )
-                    prob_diff = (uni_fb_prob - cur_fb_prob)
-                    if abs(prob_diff) <= 0.05:
-                        bonus[i][j] += 1
-                    elif prob_diff < 0:
-                        bonus[i][j] += -log_loss
-                    else:
-                        bonus[i][j] += 1 - log_loss
-
-
-                    #log_loss = -(uni_fb_prob * torch.log(cur_fb_prob + 1e-5) + (1-uni_fb_prob) * torch.log((1-cur_fb_prob) + 1e-5) )
-                    #bonus[i][j] += -log_loss#bonus[i][j]
-                else:
-                    bonus[i][j] += -5
-                    # prob_diff = (uni_fb_prob - cur_fb_prob)**
-                    # if abs(prob_diff) < 0.1:
-                    #     bonus[i][j] += 5
-                    # else:     
-                    #     bonus[i][j] += -5
-                    
-                #         if cur_fb_prob < uni_fb_prob:
-                        
-                # else:
-                #     bonus[i][j] += -5
-                    # if cur_fb_prob <= uni_fb_prob:
-                    #     bonus[i][j] += (1 - (uni_fb_prob - cur_fb_prob)) * 5
-                    # else:
-                    #      bonus[i][j] += (uni_fb_prob - cur_fb_prob) * 5
-                #bonus[i][j] = avg_reward[actions[i][j]]
-                #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
-        #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
-        return bonus
 
     def train_router(self, valid_fbs_ep, actions, action_indices, action_probs, max_fbs, x_batch_steps, task_ids_steps, returns, advs, tdlamret, critic_outputs):
         critic_losses = []
@@ -338,18 +381,17 @@ class Trainer(ABC):
         # Value loss (MSE)
         val_true = val_true.unsqueeze(-1).unsqueeze(-1)
 
-        old_val_pred =old_val_pred.unsqueeze(-1)
+        # old_val_pred =old_val_pred.unsqueeze(-1)
 
-        val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
+        # val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
 
-        # Unclipped value loss
-        vf_losses1 = torch.square(val_pred - val_true)
+        # # Unclipped value loss
+        # vf_losses1 = torch.square(val_pred - val_true)
 
-        # Clipped value loss
-        vf_losses2 = torch.square(val_pred_clipped - val_true)
-        vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
+        # # Clipped value loss
+        # vf_losses2 = torch.square(val_pred_clipped - val_true)
+        # vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
 
-        
-        #vf_loss = self.critic_loss_fn(val_pred, val_true)
+        vf_loss = self.critic_loss_fn(val_pred, val_true)
         #print("policy_loss", policy_loss, "vf_loss", vf_loss)
         return  policy_loss, vf_loss

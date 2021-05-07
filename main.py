@@ -11,8 +11,8 @@ def main(args):
         run_mnist_benchmarks(args)
     else:
         if args.metaworld:
-           from cartpole_trainer import MetaWorldTrainer
-           #from metaworld_trainer import MetaWorldTrainer
+           #from cartpole_trainer import MetaWorldTrainer
+           from metaworld_trainer import MetaWorldTrainer
            model_trainer = MetaWorldTrainer(args)
            model_trainer.train()
         else:

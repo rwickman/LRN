@@ -31,6 +31,7 @@ class FBModel(nn.Module):
         self._hidden_size = 128
         self._conv_to_fc_in = (self.args.img_size//2)**2*self._num_filters
         self.max_pool = nn.MaxPool2d(2)
+        self.num_fb_types = 6
         self._init_layers()
         self.create_fb_probs()
 
@@ -161,6 +162,9 @@ class FBModel(nn.Module):
         else:
             return "E" + str((action-1) % 6)
     
+    def get_fb_num(self, action):
+        return (action - 1) % 6
+
     def get_fb_prob(self, fb_type):
         return self.fb_prob_dict[fb_type]
 
