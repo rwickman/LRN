@@ -25,7 +25,7 @@ def conv2d_out(inp_size, kernel_size, stride, padding=0):
     # W - F + 2P / S + 1
     return (inp_size - kernel_size + 2*padding) / stride + 1
  
-def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_classes):
+def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_classes, not_shorter_depth):
     # TODO: Cover PASS_LAYER AND TAKE CUR_DEPTH AND MAX_DEPTH INTO ACCOUNT
     """Checks if a mapping between layers is valid."""
     if prev_layer is None:
@@ -47,15 +47,18 @@ def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_
             return prev_layer.out_channels == cur_layer.in_channels and cur_depth < max_depth - 1
         elif isinstance(cur_layer, nn.Linear):
             if cur_depth < max_depth - 1:
-                # The output of the Conv layer must match linear
-                return out_size / 4 == cur_layer.in_features
+                if cur_layer.out_features == num_classes:
+                    return out_size / 4 == cur_layer.in_features and not not_shorter_depth
+                else:
+                    # The output of the Conv layer must match linear
+                    return out_size / 4 == cur_layer.in_features
             else:
                 # As this is the last layer, the output must equal the number of classes
                 return out_size / 4 == cur_layer.in_features and cur_layer.out_features == num_classes 
 
         elif cur_layer is None:
             # Only use PASS_LAYER if not at last depth
-            return cur_depth < max_depth - 1
+            return cur_depth < max_depth - 1 and not not_shorter_depth
         else:
             # Conv layers must be followed Conv or a Linear layer
             return False
@@ -66,8 +69,11 @@ def is_valid_mapping(prev_layer, cur_layer, out_size, cur_depth, max_depth, num_
             return False
         elif isinstance(cur_layer, nn.Linear):
             if cur_depth < max_depth - 1:
-                # Check if features match
-                return out_size == cur_layer.in_features
+                if cur_layer.out_features == num_classes:
+                    return out_size == cur_layer.in_features and not not_shorter_depth
+                else:    
+                    # Check if features match
+                    return out_size == cur_layer.in_features
             else:
                 # As this is the last layer, the output must equal the number of classes
                 return out_size == cur_layer.in_features and cur_layer.out_features == num_classes

@@ -9,7 +9,7 @@ class ModelBuilder:
         self._update_out_size()
 
     def attempt_add_fb(self, cur_fb, cur_depth):
-        if is_valid_mapping(self._prev_layer, cur_fb.layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes):
+        if is_valid_mapping(self._prev_layer, cur_fb.layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes, self.args.not_shorter_depth):
             self._prev_layer = cur_fb.layer
             self._update_out_size()
             return True
@@ -23,9 +23,9 @@ class ModelBuilder:
         else:
             cur_layer = None
         if not self.args.metaworld: 
-            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes)
+            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes, self.args.not_shorter_depth)
         else:
-            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.mw_action_space * 2)
+            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.mw_action_space * 2, self.args.not_shorter_depth)
 
     def _update_out_size(self):
         if self._prev_layer is not None:
