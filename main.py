@@ -117,7 +117,8 @@ if __name__ == "__main__":
         help="Number of epochs to train batch of episodes")
     parser.add_argument("--nminibatches", type=int, default=4,
         help="Number of minibatches to split the batch of episdoes")
-
+    parser.add_argument("--not_shorter_depth", action="store_true",
+        help="Do not shorten the depth.")
 
     parser.add_argument("--metaworld", action="store_true",
         help="Train on Meta-World MTL10 tasks.")
