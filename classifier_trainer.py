@@ -152,8 +152,11 @@ class ClassifierTrainer(Trainer):
                             total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
                             total_actor_loss += actor_loss.detach().cpu().numpy()
                             loss += actor_loss + self.args.critic_lam * critic_loss
-                            load_balance_loss =self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
-                            loss += load_balance_loss
+                            if self.args.load_bal_lam > 0:
+                                load_balance_loss =self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
+                                loss += load_balance_loss
+                            else:
+                                load_balance_loss = 0
                             # if self.args.smooth_lam > 0.0:
                             #     smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
                             #     loss += smooth_loss

@@ -99,71 +99,86 @@ class Trainer(ABC):
         #print("load_balance_loss", load_balance_loss)
         return load_balance_loss
 
+    # def layer_reward_bonus(self, actions, output_losses_batch):
+    #     import time
+    #     start_layer_time  = time.time()
+    #     batch_size = len(actions)
+    #     depth = len(actions[0])
+    #     bonus = torch.zeros((batch_size, depth)).cuda()
+    #     temp_fb_count = self._fb_count.clone()
+    #     temp_fb_count[PASS_FB] = 0
+    #     fb_count_max = temp_fb_count.max()
+    #     fb_count_min = temp_fb_count.min()
+        
+    #     # 1. Get counts for type
+    #     # 2. If not all equal:
+    #         # a. Give negative reward to one with most count
+    #         # b. Give positive reward to one with least count
+    #         # (Consider in future make this some sort of gradient)
+    #     # Iterate over actions, and assign the reward based on the fb_bonus
+    #     fb_bonus = torch.zeros(self._router.num_fbs)
+    #     fb_type_counts = torch.zeros(self._fb_model.num_fb_types, self.args.num_dup_layers)
+    #     for a_i in range(1, self._router.num_fbs+1):
+    #         fb_type = (a_i-1) % self._fb_model.num_fb_types
+    #         dup_num = (a_i-1)//self._fb_model.num_fb_types
+    #         #print(fb_type, dup_num, a_i)
+    #         fb_type_counts[fb_type, dup_num] = self._fb_count[a_i]
+        
+    #     #print("fb_type_counts", fb_type_counts)
+        
+    #     fb_maxes = fb_type_counts.argmax(axis=1)
+        
+    #     fb_type_sums = fb_type_counts.sum() #fb_type_counts.sum(axis=1).unsqueeze(1)
+    #     # print("fb_maxes", fb_maxes)
+    #     # print("fb_type_sums", fb_type_sums)
+    #     # print("fb_type_counts", fb_type_counts)
+    #     fb_type_avgs = fb_type_counts / fb_type_sums
+
+    #     #print("fb_type_avgs", fb_type_avgs)
+    #         # self._fb_count[a_i]
+        
+    #     for i in range(batch_size):
+    #         for j in range(depth):
+    #             if actions[i][j] == 0:
+    #                 bonus[i][j] = -1
+    #             fb_type = (actions[i][j]-1) % self._fb_model.num_fb_types
+    #             dup_num = (actions[i][j]-1)//self._fb_model.num_fb_types
+    #             #print("fb_type", fb_type, "fb_maxes[fb_type]", fb_maxes[fb_type], "dup_num", dup_num)
+    #             if fb_type_avgs[fb_type, dup_num] > 1/self.args.num_dup_layers:
+    #                 bonus[i][j] = -1#actions[i][j]
+    #             else:
+    #                 bonus[i][j] = 1
+        
+    #     return bonus
+
+
     def layer_reward_bonus(self, actions, output_losses_batch):
         import time
         start_layer_time  = time.time()
         batch_size = len(actions)
         depth = len(actions[0])
         bonus = torch.zeros((batch_size, depth)).cuda()
-        temp_fb_count = self._fb_count.clone()
-        temp_fb_count[PASS_FB] = 0
-        fb_count_max = temp_fb_count.max()
-        fb_count_min = temp_fb_count.min()
-        
-        # 1. Get counts for type
-        # 2. If not all equal:
-            # a. Give negative reward to one with most count
-            # b. Give positive reward to one with least count
-            # (Consider in future make this some sort of gradient)
-        # Iterate over actions, and assign the reward based on the fb_bonus
-        fb_bonus = torch.zeros(self._router.num_fbs)
-        fb_type_counts = torch.zeros(self._fb_model.num_fb_types, self.args.num_dup_layers)
-        for a_i in range(1, self._router.num_fbs+1):
-            fb_type = (a_i-1) % self._fb_model.num_fb_types
-            dup_num = (a_i-1)//self._fb_model.num_fb_types
-            #print(fb_type, dup_num, a_i)
-            fb_type_counts[fb_type, dup_num] = self._fb_count[a_i]
-        
-        #print("fb_type_counts", fb_type_counts)
-        
-        fb_maxes = fb_type_counts.argmax(axis=1)
-        
-        fb_type_sums = fb_type_counts.sum(axis=1).unsqueeze(1)
-        # print("fb_maxes", fb_maxes)
-        # print("fb_type_sums", fb_type_sums)
-        # print("fb_type_counts", fb_type_counts)
-        fb_type_avgs = fb_type_counts / fb_type_sums
 
+        fb_avgs = self._fb_count / self._fb_count.sum()
+        fb_count_min = self._fb_count.min()
+        fb_count_max = self._fb_count.max()
+        # print("fb_avgs", fb_avgs)
+        # print("fb_avgs.sum()", fb_avgs.sum())
         #print("fb_type_avgs", fb_type_avgs)
             # self._fb_count[a_i]
-        
+        self._fb_count[PASS_FB] = 0
         for i in range(batch_size):
             for j in range(depth):
-                if actions[i][j] == 0:
-                    continue
-                fb_type = (actions[i][j]-1) % self._fb_model.num_fb_types
-                dup_num = (actions[i][j]-1)//self._fb_model.num_fb_types
-                #print("fb_type", fb_type, "fb_maxes[fb_type]", fb_maxes[fb_type], "dup_num", dup_num)
-                if fb_type_avgs[fb_type, dup_num] > 1/self.args.num_dup_layers + 0.1:
-                    bonus[i][j] = -1#actions[i][j]
+                if actions[i][j] == PASS_FB:
+                    bonus[i][j] = 0
                 else:
-                    bonus[i][j] = 1
-        # print("fb_maxes", fb_maxes)
-        # print("self._fb_count", self._fb_count)
-        # print("bonus", bonus)
-        #for i in range(batch_size):
-        #    for j in range(depth):
-        #        total_reward[actions[i][j]] += output_losses_batch[i]
-        #avg_reward = avg_reward / (temp_fb_count += 1)
-        #for i in range(batch_size):
-        #    for j in range(depth):
-        #        if actions[i][j] != PASS_FB:
-        #            bonus[i][j] += 1 - (temp_fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
-                
-                #bonus[i][j] = avg_reward[actions[i][j]]
-                #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
-        #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
-        #print("Total time", time.time() - start_layer_time)
+                    #print("fb_type", fb_type, "fb_maxes[fb_type]", fb_maxes[fb_type], "dup_num", dup_num)
+                    bonus[i][j] += 1 - (self._fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
+                # if fb_avgs[actions[i][j]] > 1/self.args.num_dup_layers:
+                #     bonus[i][j] = -1
+                # else:
+                #     bonus[i][j] = 1
+        print("BONUS TIME", time.time() - start_layer_time)
         return bonus
 
 
@@ -274,9 +289,10 @@ class Trainer(ABC):
 
                     total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
                     total_actor_loss += actor_loss.detach().cpu().numpy()
-                    load_balance_loss = self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
-                    total_load_balance_loss += load_balance_loss.detach().cpu().numpy()
-                    loss += load_balance_loss                          
+                    if self.args.load_bal_lam > 0:
+                        load_balance_loss = self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
+                        total_load_balance_loss += load_balance_loss.detach().cpu().numpy()
+                        loss += load_balance_loss                          
 
                     loss.backward()
                     #torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
