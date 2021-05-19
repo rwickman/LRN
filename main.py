@@ -43,20 +43,20 @@ if __name__ == "__main__":
         help="Latent size of the hidden state.")
     parser.add_argument("--max_depth", type=int, default=4,
         help="Latent size of the hidden state.")
-    parser.add_argument("--lr", type=float, default=1e-3,
+    parser.add_argument("--lr", type=float, default=1e-4,
         help="Router learning rate.")
-    parser.add_argument("--lr_gamma", type=float, default=0.95,
+    parser.add_argument("--lr_gamma", type=float, default=0.97,
         help="Router learning rate decay gamma.")
-    parser.add_argument("--fb_lr", type=float, default=1e-2,
+    parser.add_argument("--fb_lr", type=float, default=1e-4,
         help="Output model learning rate.")
-    parser.add_argument("--fb_lr_gamma", type=float, default=0.95,
+    parser.add_argument("--fb_lr_gamma", type=float, default=0.97,
         help="Output modellearning rate decay gamma.")
 
-    parser.add_argument("--batch_size", type=int, default=32,
+    parser.add_argument("--batch_size", type=int, default=128,
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.1,
         help="Dropout rate.")
-    parser.add_argument("--fb_drop_rate", type=float, default=0.2,
+    parser.add_argument("--fb_drop_rate", type=float, default=0.0,
         help="Layer dropout rate for router.")
     parser.add_argument("--num_dup_layers", type=int, default=4,
         help="Number of duplicate layers .")
@@ -68,9 +68,9 @@ if __name__ == "__main__":
         help="GAE lambda.")
     parser.add_argument("--entropy_lam", type=float, default=0.001,
         help="Entropy lambda.")
-    parser.add_argument("--critic_lam", type=float, default=0.1,
+    parser.add_argument("--critic_lam", type=float, default=0.5,
         help="Critic lambda.")
-    parser.add_argument("--load_bal_lam", type=float, default=0.1,
+    parser.add_argument("--load_bal_lam", type=float, default=0.0,
         help="Load-balancing lambda.")
     parser.add_argument("--train_iter", type=int, default=10000,
         help="Number of training router iterations.")
@@ -115,10 +115,13 @@ if __name__ == "__main__":
         help="Value clipping used for PPO.")
     parser.add_argument("--noptepochs", type=int, default=1,
         help="Number of epochs to train batch of episodes")
-    parser.add_argument("--nminibatches", type=int, default=4,
+    parser.add_argument("--nminibatches", type=int, default=2,
         help="Number of minibatches to split the batch of episdoes")
     parser.add_argument("--not_shorter_depth", action="store_true",
         help="Do not shorten the depth.")
+    parser.add_argument("--max_grad_norm", type=float, default=0.5,
+        help="Max gradient norm.")
+
 
     parser.add_argument("--metaworld", action="store_true",
         help="Train on Meta-World MTL10 tasks.")
