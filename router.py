@@ -352,6 +352,7 @@ class Critic(nn.Module):
         self.critic_out2 = nn.Linear(self.args.hidden_size, 1)
 
 
+
     def forward(self, state, actions_mask=None):
         if actions_mask is not None:
             state_mask = torch.reshape(actions_mask, (actions_mask.shape[0], 1, 1, actions_mask.shape[1]))
@@ -371,8 +372,7 @@ class Critic(nn.Module):
 
         # Perform weight combination
         comb_state = torch.matmul(state_att.transpose(2,1), enc_output)
-        out = self.critic_out2(F.relu(comb_state))
-
+        out = self.critic_out2(comb_state)
         #out = out.squeeze(-1)
         return out
 
@@ -426,7 +426,7 @@ class Router(nn.Module):
         
         # h_t_router = torch.zeros(1, self.args.hidden_size).cuda()
         # c_t_router = torch.zeros(1, self.args.hidden_size).cuda()
-        fb_emb_choice = self.fb_embs(torch.tensor([PASS_FB]*batch_size).cuda())
+        #fb_emb_choice = self.fb_embs(torch.tensor([PASS_FB]*batch_size).cuda())
         h_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
         c_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
 
@@ -452,11 +452,11 @@ class Router(nn.Module):
             max_emb_len = 0
 
             for b_i in range(batch_size):
+                
                 if i  == 0:
                     valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, None)
                 else:
                     valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, tuple(actions[b_i]))
-
                 # Perform fb dropout
                 if should_drop_fbs:
                     valid_fbs = self.fb_dropout(valid_fbs)
@@ -517,7 +517,7 @@ class Router(nn.Module):
                     assert builders[b_i].attempt_add_fb(cur_fb, i)
 
             # Update fb input embedding choice for next input
-            fb_emb_choice = self.fb_embs(torch.tensor(fb_choices).cuda())
+            #fb_emb_choice = self.fb_embs(torch.tensor(fb_choices).cuda())
 
             # Setup next state
             if i +1 < self.args.max_depth:

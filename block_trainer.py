@@ -30,6 +30,7 @@ class BlockTrainer:
         #print("MODEL LOSS: ", loss, "pred", torch.sigmoid(pred)[0].detach().cpu().numpy()[0], "vs", target.cpu().numpy()[0])
         total_bce_loss = total_bce_loss/batch_size
         total_bce_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self._fb_model.parameters(), self.args.max_grad_norm)
         self.fb_optim.step()
         self.fb_optim.zero_grad()
         output_loss = output_loss.detach().cpu().numpy()

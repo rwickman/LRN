@@ -33,6 +33,7 @@ class Trainer(ABC):
         self.adv_avg = torch.zeros(self.args.max_depth).cuda()
         self.adv_std = torch.ones(self.args.max_depth).cuda()
         self.critic_loss_fn = nn.SmoothL1Loss()
+        self._action_smooth_loss = nn.KLDivLoss()
         self._fb_count = torch.zeros(self._router.num_fbs + 1)
         if self.args.load:
             self.load()
@@ -45,7 +46,13 @@ class Trainer(ABC):
                 "num_unused_fbs" : []
             }
 
-
+        # for param_group in self.fb_optim.param_groups:
+        #     print("fb_optim lr", param_group["lr"])
+        #     param_group["lr"] = 1e-4
+        # for param_group in self.optimizer.param_groups:
+        #     #print("fb_optim lr", param_group["lr"])
+        #     param_group["lr"] = 1e-4
+        
     @abstractmethod
     def train(self):
         pass
@@ -152,14 +159,14 @@ class Trainer(ABC):
     #     return bonus
 
 
-    def layer_reward_bonus(self, actions, output_losses_batch):
-        import time
-        start_layer_time  = time.time()
+    def layer_reward_bonus(self, actions):
+        # import time
+        # start_layer_time  = time.time()
         batch_size = len(actions)
         depth = len(actions[0])
         bonus = torch.zeros((batch_size, depth)).cuda()
 
-        fb_avgs = self._fb_count / self._fb_count.sum()
+        #fb_avgs = self._fb_count / self._fb_count.sum()
         fb_count_min = self._fb_count.min()
         fb_count_max = self._fb_count.max()
         # print("fb_avgs", fb_avgs)
@@ -178,7 +185,7 @@ class Trainer(ABC):
                 #     bonus[i][j] = -1
                 # else:
                 #     bonus[i][j] = 1
-        print("BONUS TIME", time.time() - start_layer_time)
+        #print("BONUS TIME", time.time() - start_layer_time)
         return bonus
 
 
@@ -267,6 +274,7 @@ class Trainer(ABC):
                     end = (m_i + 1) * (num_exs // self.args.nminibatches)
                     m_batch_idxs = batch_ids[start:end]
                     # Get prediction for current timestep
+                    #print("x_batch_steps[m_batch_idxs]", x_batch_steps[m_batch_idxs][:, :5])
                     new_prob, val_pred = self._router.predict_step(
                         x_batch_steps[m_batch_idxs],
                         task_ids_steps[m_batch_idxs],
@@ -294,13 +302,21 @@ class Trainer(ABC):
                         total_load_balance_loss += load_balance_loss.detach().cpu().numpy()
                         loss += load_balance_loss                          
 
+                    if self.args.smooth_lam > 0.0:
+                        smooth_loss = self.label_smooth_loss(action_indices, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
+                        loss += smooth_loss
+                        #total_smooth_loss += smooth_loss.detach().cpu().numpy()                            
+
+
                     loss.backward()
-                    #torch.nn.utils.clip_grad_norm_(self._router.parameters(), 2.0)
+                    torch.nn.utils.clip_grad_norm_(self._router.parameters(), self.args.max_grad_norm)
                     print("self._router.critic.critic_out1.weight.grad.max()", self._router.critic.critic_out1.weight.grad.max())
                     print("self._router.critic.critic_out2.weight.grad.max()", self._router.critic.critic_out2.weight.grad.max())
                     print("self._router.state_encoder.fc1.weight.grad.max()", self._router.state_encoder.fc1.weight.grad.max())
                     print("self._router.state_encoder.fc3.weight.grad.max()", self._router.state_encoder.fc3.weight.grad.max())
                     print("self._router.state_encoder.fc3.weight.grad.min()", self._router.state_encoder.fc3.weight.grad.min())
+                    print("self._router.trans_router.actor_out1.weight.grad.min()", self._router.trans_router.actor_out1.weight.grad.min())
+                    print("self._router.trans_router.actor_out1.weight.grad.max()", self._router.trans_router.actor_out1.weight.grad.max())
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
@@ -392,22 +408,52 @@ class Trainer(ABC):
         #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
         entropy_pen = 0
         # PPO loss, averaged over several batches
-        policy_loss = -torch.mean(torch.min(surrogate_1, surrogate_2))
+        policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
 
         # Value loss (MSE)
+        #print("val_true", val_true[:5])
+        #print("val_pred", val_pred.squeeze(-1).squeeze(-1)[:5], val_pred.shape)
         val_true = val_true.unsqueeze(-1).unsqueeze(-1)
 
-        # old_val_pred =old_val_pred.unsqueeze(-1)
+        #old_val_pred =old_val_pred.unsqueeze(-1)
 
-        # val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
+        #val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
 
-        # # Unclipped value loss
-        # vf_losses1 = torch.square(val_pred - val_true)
+        # Unclipped value loss
+        #vf_losses1 = torch.square(val_true - val_pred)
 
-        # # Clipped value loss
-        # vf_losses2 = torch.square(val_pred_clipped - val_true)
-        # vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
-
+        # Clipped value loss
+        #vf_losses2 = torch.square(val_true - val_pred_clipped)
+        #vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
+        #print("val_pred", val_pred.shape)
+        #print("val_true", val_true.shape)
         vf_loss = self.critic_loss_fn(val_pred, val_true)
-        #print("policy_loss", policy_loss, "vf_loss", vf_loss)
+        #vf_loss = self.critic_loss_fn(val_pred.view(val_pred.shape[0]), val_true)
+        print("policy_loss", policy_loss, "vf_loss", vf_loss)
         return  policy_loss, vf_loss
+
+
+    def label_smooth_loss(self, action_indices, new_prob, valid_fbs_count, actions_one_hot, m_batch_idxs):
+        """"Add label-smoothing loss."""
+        batch_size = new_prob.shape[0]
+        total_smooth_loss = torch.zeros(1).cuda()
+        action_probs = torch.sum(actions_one_hot * new_prob, axis=-1)
+        
+        b_i_old = m_batch_idxs // self.args.max_depth
+        t_old = m_batch_idxs % self.args.max_depth
+        for b_i in range(batch_size):
+            num_valid_fbs = valid_fbs_count[b_i].int()
+            if num_valid_fbs > 1:
+                max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
+                if action_probs[b_i] > max_action_prob:
+                    smooth_actions = torch.zeros_like(new_prob[b_i])
+                    # Add prob to all valid actions
+                    smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
+
+                    
+                    # Add extra prob to selected action
+                    smooth_actions[action_indices[b_i_old[b_i]][t_old[b_i]]] = max_action_prob
+                    smooth_loss = self.args.smooth_lam * self._action_smooth_loss(torch.log(new_prob[b_i] + 1e-7), smooth_actions)
+                    total_smooth_loss += smooth_loss
+        print("total_smooth_loss", total_smooth_loss)
+        return total_smooth_loss / batch_size

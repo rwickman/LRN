@@ -33,7 +33,7 @@ class FBModel(nn.Module):
         self.max_pool = nn.MaxPool2d(2)
         self.num_fb_types = 6
         self._init_layers()
-        self.create_fb_probs()
+        #self.create_fb_probs()
 
     def _init_layers(self):
         fbs = []
