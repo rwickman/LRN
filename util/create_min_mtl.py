@@ -6,17 +6,28 @@ import matplotlib.pyplot as plt
 import random
 
 img_dim = (84,84)
-root_dir = "imagenet"
+root_dir = "/media/data/code/Routing/data/ILSVRC/Data/CLS-LOC/train/"
 data_dirs = os.listdir(root_dir)
 out_train = "min-mtl.npy"
 out_test = "min-mtl-test.npy"
 num_images = 800
 num_test_images = 50
 num_classes = 5
-# Create 10 groups with 5 labels each
 
+# Get first 50 labels
+labels_file = "/media/data/code/Routing/data/LOC_synset_mapping.txt"
+labels = []
+NUM_LABELS = 50
+with open(labels_file) as f:
+    for i, line in enumerate(f):
+        if i >= NUM_LABELS:
+            break
+        s = line.split()
+        labels.append(s[0])
+
+# Create 10 groups with 5 labels each
 with open(out_train, "wb") as f:
-    for idx, data_dir in enumerate(data_dirs):
+    for idx, data_dir in enumerate(labels):
         data_dir_path = os.path.join(root_dir, data_dir)
         img_paths = glob(data_dir_path + "/*")[:num_images]
         task_id = idx // num_classes
@@ -34,7 +45,7 @@ with open(out_train, "wb") as f:
             np.save(f, ex)
 
 with open(out_test, "wb") as f:
-    for idx, data_dir in enumerate(data_dirs):
+    for idx, data_dir in enumerate(labels):
         data_dir_path = os.path.join(root_dir, data_dir)
         img_paths = glob(data_dir_path + "/*")[num_images:num_test_images+num_images]
         print(len(img_paths))
