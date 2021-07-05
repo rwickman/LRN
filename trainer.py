@@ -22,7 +22,11 @@ class Trainer(ABC):
             self._fb_model = FBModel(self.args).cuda()
         
         
-        self._router = Router(self.args, self.args.num_tasks, self._fb_model.get_fb, self._fb_model.get_num_fbs()).cuda()
+        self._router = Router(
+            self.args,
+            self.args.num_tasks,
+            self._fb_model.get_fb,
+            self._fb_model.get_num_fbs()).cuda()
         print("ROUTER PARAMS: ", sum(p.numel() for p in self._router.parameters()))
         print("FB MODEL PARAMS: ", sum(p.numel() for p in self._fb_model.parameters()))
         
@@ -381,7 +385,7 @@ class Trainer(ABC):
                 self._fb_count = torch.tensor(json.load(f))
 
 
-    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions_one_hot, old_val_pred):
+    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions):
         """PPO discreate loss function.
         Args:
             advantage: advantage from the episode.
@@ -394,11 +398,22 @@ class Trainer(ABC):
         Returns:
             A tuple of PPO loss and value MSE loss 
         """
-        new_prob = torch.log(torch.sum(actions_one_hot * new_prob, axis=-1))
-        old_prob = torch.log(torch.sum(actions_one_hot * old_prob, axis=-1))
+        # print(actions)
 
+
+        new_prob = new_prob.gather(1, actions).view(-1)
+        
+        old_prob = old_prob.gather(1, actions).view(-1)
+        # print("new_prob", new_prob)
+        # print("old_prob", old_prob)
+
+        #new_prob = torch.log(torch.sum(actions_one_hot * new_prob, axis=-1))
+        #old_prob = torch.log(torch.sum(actions_one_hot * old_prob, axis=-1))
+        # print("new_prob", new_prob)
         # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
-        ratio = torch.exp(new_prob - old_prob.detach())
+        ratio = new_prob / (old_prob.detach() + 1e-11)
+        # print("ratio", ratio)
+        # print("adv", adv)
         surrogate_1 = ratio * adv
 
         # Clipped policy gradient, ratio clipped between [0.8, 1.2]
@@ -408,12 +423,15 @@ class Trainer(ABC):
         #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
         entropy_pen = 0
         # PPO loss, averaged over several batches
+        # print("surrogate_1, surrogate_2", surrogate_1, surrogate_2)
+        # print("torch.min(surrogate_1, surrogate_2)", torch.min(surrogate_1, surrogate_2))
+        # print("torch.min(surrogate_1, surrogate_2).mean()", torch.min(surrogate_1, surrogate_2).mean())
         policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
 
         # Value loss (MSE)
         #print("val_true", val_true[:5])
         #print("val_pred", val_pred.squeeze(-1).squeeze(-1)[:5], val_pred.shape)
-        val_true = val_true.unsqueeze(-1).unsqueeze(-1)
+        # val_true = val_true.unsqueeze(-1).unsqueeze(-1)
 
         #old_val_pred =old_val_pred.unsqueeze(-1)
 
@@ -427,9 +445,11 @@ class Trainer(ABC):
         #vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
         #print("val_pred", val_pred.shape)
         #print("val_true", val_true.shape)
+        # print("val_pred", val_pred, "val_true", val_true)
+        
         vf_loss = self.critic_loss_fn(val_pred, val_true)
         #vf_loss = self.critic_loss_fn(val_pred.view(val_pred.shape[0]), val_true)
-        print("policy_loss", policy_loss, "vf_loss", vf_loss)
+        #print("policy_loss", policy_loss, "vf_loss", vf_loss)
         return  policy_loss, vf_loss
 
 

@@ -119,7 +119,7 @@ if __name__ == "__main__":
         help="Number of minibatches to split the batch of episdoes")
     parser.add_argument("--not_shorter_depth", action="store_true",
         help="Do not shorten the depth.")
-    parser.add_argument("--max_grad_norm", type=float, default=0.5,
+    parser.add_argument("--max_grad_norm", type=float, default=2.0,
         help="Max gradient norm.")
 
 

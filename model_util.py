@@ -10,14 +10,11 @@ class RouterResult:
     failed: bool
     action_probs: List[torch.Tensor]
     actions: List[int]
-    # The index in the action probability that corresponds to the action (i.e., layer)
-    action_indices: List[int]
     critic_outputs: List[torch.Tensor]
     att_weights: List[Dict[str, torch.Tensor]]
     valid_fbs_ep: List[List[int]]
     fb_count: torch.Tensor
-    # The max fbs over all timesteps/batches
-    max_fbs: int
+    action_masks: List[torch.Tensor]
 
 PASS_FB = 0
 
@@ -162,15 +159,15 @@ def create_padding_mask(valid_fbs_batch):
     return torch.reshape(masks, (masks.shape[0], 1, 1, masks.shape[1]))
 
 
-def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_depth, max_fbs):
+def window_and_pad(valid_fbs_ep, actions, action_probs, max_depth, num_fbs):
     batch_size = len(valid_fbs_ep)
     num_exs = batch_size * max_depth 
 
     valid_fbs_ep_pad = torch.zeros(
-        (num_exs, max_fbs),
+        (num_exs, num_fbs + 1),
         dtype=torch.int64).cuda()
     valid_fbs_ep_mask = torch.zeros(
-        (num_exs, max_fbs),
+        (num_exs, num_fbs + 1),
         dtype=torch.int64).cuda()
     valid_fbs_count = torch.zeros(num_exs)
 
@@ -190,11 +187,11 @@ def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_dept
     action_probs_pad = torch.zeros(
         (num_exs, max_fbs),
         dtype=torch.float64).cuda()
-    
+
     actions_batch = torch.zeros(num_exs, dtype=torch.int64).cuda()
     actions = torch.tensor(actions)
-    action_indices = torch.tensor(action_indices, dtype=torch.int64)
-    action_indices = torch.reshape(action_indices, (-1, ))
+
+    fb_masks = torch.zeros(batch_size, max_depth, num_exs)
 
     for i in range(batch_size):
         for j in range(max_depth):
@@ -205,9 +202,14 @@ def window_and_pad(valid_fbs_ep, actions, action_indices, action_probs, max_dept
             valid_fbs_ep_pad[ex_i, :len(valid_fbs_ep[i][j])] = torch.tensor(valid_fbs_ep[i][j])
             valid_fbs_ep_mask[ex_i, :len(valid_fbs_ep[i][j])+1] = 1
             valid_fbs_count[ex_i] = len(valid_fbs_ep[i][j])
-            
-            actions_one_hot[ex_i, action_indices[ex_i]] = 1
+
+            actions_one_hot[ex_i, actions[ex_i]] = 1
             action_probs_pad[ex_i, :action_probs[i][j].shape[0]] = action_probs[i][j]
 
     return actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count, actions_batch
 
+
+def create_lookahead_mask(size):
+    return torch.triu(
+        torch.ones(size, size),
+        diagonal=1)

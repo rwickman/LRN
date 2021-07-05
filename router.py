@@ -49,7 +49,6 @@ class MultiHeadAttention(nn.Module):
             scaled_att_logits += (mask * -1e9)
             
         att_weights = F.softmax(scaled_att_logits, dim=-1)
-
         scaled_att = torch.matmul(att_weights, v)
 
         # (batch_size, fbs+hidden+enc_state, num_heads, depth)
@@ -69,15 +68,11 @@ class PointWiseFFN(nn.Module):
         self.args = args
         self.fc1 = nn.Linear(self.args.hidden_size, self.args.dff)
         self.fc2 = nn.Linear(self.args.dff, self.args.hidden_size)
-        #self.dropout1 = nn.Dropout(self.args.drop_rate)
-        #self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
-
+       
     def forward(self, x):
         pw_out = F.relu(self.fc1(x))
         pw_out = self.fc2(pw_out)
-        #pw_out = self.dropout1(pw_out)
-        #out = self.norm1(x + pw_out)
-
+       
         return pw_out
 
 
@@ -127,9 +122,9 @@ class DecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
         self.norm3 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
     
-    def forward(self, x, enc_output, fb_mask=None):
+    def forward(self, x, enc_output, look_ahead_mask=None):
         # Preform self attention over available fbs
-        att_out, att_weights1 = self.mha1(x, x, x, fb_mask)
+        att_out, att_weights1 = self.mha1(x, x, x, look_ahead_mask)
         att_out = self.dropout1(att_out)
         mha_out1 = self.norm1(x + att_out)
 
@@ -159,7 +154,7 @@ class Encoder(nn.Module):
         """
             x: task emb, example emb, used fbs embs
         """
-        x *= torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32)).cuda()
+        x = x * torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32)).cuda()
         x += self.pos_enc[:, :x.shape[1], :]
         x = self.dropout(x)
 
@@ -187,7 +182,7 @@ class Decoder(nn.Module):
             enc_output: Tensor of output of last encoder fb.
         """
         num_fbs = x.shape[1]
-        x *= torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
+        x = x * torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
         x += self.pos_enc[:, :num_fbs, :]
         x = self.dropout(x)
         
@@ -204,32 +199,47 @@ class Decoder(nn.Module):
 
 
 class TransformerRouter(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, num_mod):
         super().__init__()
         self.args = args
+        self.num_mod = num_mod
 
         self.encoder = Encoder(self.args, self.args.num_enc_layers)
         self.decoder = Decoder(self.args)
 
         # Maps each decorder embedding to 1 value
-        self.actor_out1 = nn.Linear(self.args.hidden_size, 1)
-        #self.actor_out2 = nn.Linear(self.args.hidden_size, 1)
+        #self.actor_out1 = nn.Linear(self.args.hidden_size, 1)
         
+        # Maps each embedding to distr value
+        self.actor_out1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.actor_out2 = nn.Linear(self.args.hidden_size, self.num_mod+1)
+
+        self.critic_out1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+        self.critic_out2 = nn.Linear(self.args.hidden_size, 1)
+        
+        #self.actor_out2 = nn.Linear(self.args.hidden_size, 1)
 
     def forward(self, state, fb_embs, fb_mask=None, action_mask=None):
-        enc_output = self.encoder(state, action_mask)
+        enc_output = self.encoder(state)
+        dec_output, att_weights = self.decoder(
+            fb_embs, enc_output, fb_mask)
         
-        dec_output, att_weights = self.decoder(fb_embs, enc_output, fb_mask)
         # batch size, len(fb_embs)
-        actor_out = self.actor_out1(dec_output)
-        actor_out = actor_out.view(actor_out.shape[0], actor_out.shape[1])
-        #actor_out = self.actor_out2(actor_out).squeeze(-1)
-        if fb_mask is not None:
-            actor_out += torch.reshape(fb_mask, (fb_mask.shape[0], fb_mask.shape[-1])) * -1e9
-        fb_probs = F.softmax(actor_out, dim=-1)
-        return fb_probs, att_weights
-        
+        actor_out = F.relu(self.actor_out1(dec_output))
+        actor_out = self.actor_out2(actor_out)
 
+
+        val_preds = F.relu(self.critic_out1(dec_output))
+        val_preds = self.critic_out2(val_preds)
+
+        # Apply masks over invalid actions
+        if action_mask is not None:
+            actor_out += action_mask * -1e9
+
+        # Get probabilities over modules
+        fb_probs = F.softmax(actor_out, dim=-1)
+
+        return fb_probs, val_preds, att_weights
 
 class Attention(nn.Module):
     def __init__(self, args):
@@ -353,17 +363,18 @@ class Critic(nn.Module):
 
 
 
-    def forward(self, state, actions_mask=None):
-        if actions_mask is not None:
-            state_mask = torch.reshape(actions_mask, (actions_mask.shape[0], 1, 1, actions_mask.shape[1]))
+    def forward(self, state, fb_mask=None):
+        if fb_mask is not None:
+            state_mask = torch.reshape(fb_mask, (fb_mask.shape[0], 1, 1, fb_mask.shape[1]))
         else:
             state_mask = None
+
         enc_output = self.critic_encoder(state, state_mask)
-        
+
         att_logits = self.critic_out1(enc_output)
 
-        if actions_mask is not None:
-            att_logits += (actions_mask.unsqueeze(-1) * -1e9)
+        if fb_mask is not None:
+            att_logits += (fb_mask.unsqueeze(-1) * -1e11)
 
         dk = torch.tensor(att_logits.shape[-1], dtype=torch.float32)
         att_logits = att_logits / torch.sqrt(dk)
@@ -373,7 +384,7 @@ class Critic(nn.Module):
         # Perform weight combination
         comb_state = torch.matmul(state_att.transpose(2,1), enc_output)
         out = self.critic_out2(comb_state)
-        #out = out.squeeze(-1)
+
         return out
 
 class Router(nn.Module):
@@ -385,7 +396,7 @@ class Router(nn.Module):
         self.num_tasks = num_tasks
         self._valid_fbs_dict = {}
 
-        self.trans_router = TransformerRouter(self.args)
+        self.trans_router = TransformerRouter(self.args, self.num_fbs)
 
         self.fb_embs = nn.Embedding(self.num_fbs+1, self.args.hidden_size)
 
@@ -401,58 +412,41 @@ class Router(nn.Module):
 
     def forward(self, imgs, task_id, argmax=False, should_drop_fbs=True):
         batch_size = imgs.shape[0]
-        
-        # Encode the state
-        enc_state = self.state_encoder(imgs)
-
-        # Get task embedding
-        task_emb = self.task_embs(task_id)
 
         builders = [ModelBuilder(self.args) for _ in range(batch_size)]
 
-        # Get fb embeddings
-        # if self.args.constraints:
-        #     fb_emb_indices = self.args.constraints[int(task_id)].copy()
-        # else:
         fb_emb_indices = [list(range(self.num_fbs+1)) for _ in range(batch_size) ]
-        # valid_fbs = self._get_valid_fbs(builder, fb_emb_indices)
+
+        critic_outputs = torch.zeros(batch_size, self.args.max_depth, 1).cuda()
+        # Store the state of the actions every timestep
+        actions_ep = torch.zeros(
+            self.args.max_depth, batch_size, self.args.max_depth, dtype=torch.int64).cuda()
         
-
-        # Get valid fbs
-
-        
-        #fb_embs = self.fb_embs(torch.arange(self.num_fbs+1).cuda()).unsqueeze(0)
-
-        
-        # h_t_router = torch.zeros(1, self.args.hidden_size).cuda()
-        # c_t_router = torch.zeros(1, self.args.hidden_size).cuda()
-        #fb_emb_choice = self.fb_embs(torch.tensor([PASS_FB]*batch_size).cuda())
-        h_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
-        c_t_critic = torch.zeros(batch_size, self.args.hidden_size).cuda()
-
-        critic_outputs = torch.zeros(batch_size, self.args.max_depth, 1).cuda()#[[] for _ in range(batch_size) ]
         actions = [[] for _ in range(batch_size)]
-        action_indices = [[] for _ in range(batch_size)]
+
         # fb_mask = torch.zeros(self.num_fbs+1).cuda()
         failed = False
         cur_loss = None
-        action_probs = [[] for _ in range(batch_size)]
+        action_probs = torch.zeros(batch_size, self.args.max_depth, self.num_fbs+1).cuda()
         
         att_weights_list = [[] for _ in range(batch_size)]
-        state = torch.stack((enc_state, task_emb), 1)
         valid_fbs_ep = [[] for _ in range(batch_size)]
-        fb_masks_ep = [[] for _ in range(batch_size)]
+        
         fb_count = torch.zeros(self.num_fbs  + 1)
-        max_fbs = 0
+
+        # Mask used for invalid actions
+        actions_masks = torch.ones(
+            batch_size,
+            self.args.max_depth,
+            self.num_fbs+1).cuda()
+
         # Build the model architecture 
         for i in range(self.args.max_depth):
             # Update the valid fbs over the batch
             valid_fbs_batch = []
-            fb_masks_batch = []
             max_emb_len = 0
 
-            for b_i in range(batch_size):
-                
+            for b_i in range(batch_size): 
                 if i  == 0:
                     valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, None)
                 else:
@@ -462,24 +456,36 @@ class Router(nn.Module):
                     valid_fbs = self.fb_dropout(valid_fbs)
                 valid_fbs_batch.append(torch.tensor(valid_fbs))
                 valid_fbs_ep[b_i].append(valid_fbs)
-                max_fbs = max(max_fbs, len(valid_fbs))
+                
+                # Update module mask to only mask out invalid actions
+                actions_masks[b_i, i, valid_fbs] = 0
+            
+            # Get the embeddings for the model currently getting constructed
+            if i == 0:
+                fb_embs = self.fb_embs(
+                    torch.zeros(batch_size,1, dtype=torch.int64).cuda())                
+            else:
+                fb_embs = self.fb_embs(
+                    torch.cat(
+                        (torch.zeros(batch_size,1,dtype=torch.int64),
+                        torch.tensor(actions)), 1).cuda())
+            # Encode the state
+            enc_state = self.state_encoder(imgs)
 
-            # Add padding
-            valid_fbs_batch = pad_sequence(valid_fbs_batch, batch_first=True)
+            # Get task embedding
+            task_emb = self.task_embs(task_id)
+            
+            # Update the state
+            state = torch.stack((enc_state, task_emb), 1)
 
-            fb_embs = self.fb_embs(valid_fbs_batch.cuda())
-            fb_masks_batch = create_padding_mask(valid_fbs_batch)        
+            # Get router prediction
+            fb_probs, val_preds, att_weights = self.trans_router(
+                state, fb_embs, action_mask=actions_masks[:, i:i+1])
 
-            fb_probs, att_weights = self.trans_router(state, fb_embs, fb_masks_batch)
-            #att_weights_list.append(att_weights)
+            # Update critic state
+            critic_state = torch.cat((state, fb_embs), 1)
+            
 
-            # Compute critic output
-            # inp = torch.stack((enc_state, task_emb, fb_emb_choice), 1)
-            v_t = self.critic(state)
-            critic_outputs[:, i] = v_t.squeeze(-1)
-            # h_t_critic, c_t_critic = self.critic_cell(inp, (h_t_critic, c_t_critic))
-            # v_t = self.critic_out(F.relu(h_t_critic))
-            # critic_outputs[:, i] = v_t
 
             
             # Iterate over choices in a batch
@@ -488,25 +494,22 @@ class Router(nn.Module):
                 pass
                 # Choose a fbs
                 if argmax:
-                    fb_sample = fb_probs[b_i].argmax()
-                    fb_choice = valid_fbs_batch[b_i][fb_sample]
+                    fb_sample = fb_probs[b_i, -1].argmax()
+                    fb_choice = int(fb_sample)#valid_fbs_batch[b_i][fb_sample]
                 else:
-                    # if np.random.rand() > 0.95:
-                    #     fb_choice = torch.tensor([np.random.choice(torch.where(fb_mask == 0)[0].cpu().numpy())]).cuda()
-                    # else:
                     # Sample a fb
-                    fb_distr = Categorical(fb_probs[b_i])
+                    fb_distr = Categorical(fb_probs[b_i, -1])
                     fb_sample = fb_distr.sample()
-                    fb_choice = int(valid_fbs_batch[b_i][fb_sample])
-                    assert fb_probs[b_i][fb_sample] != 0
+                    fb_choice = int(fb_sample)#int(valid_fbs_batch[b_i][fb_sample])
+                    assert fb_probs[b_i, -1, fb_sample] != 0
                 
                 # Each action needs to be associated with its index in the fb_probs
                 actions[b_i].append(fb_choice)
-                action_indices[b_i].append(fb_sample)
-                action_probs[b_i].append(fb_probs[b_i])
+                action_probs[b_i,i] = fb_probs[b_i, -1]
                 fb_choices.append(fb_choice)
                 fb_count[fb_choice] += 1
-                
+                # Set critic_outputs
+                critic_outputs[b_i,i] = val_preds[b_i, -1]
                 # Remove the fb choice
                 if fb_choice != PASS_FB:
                     fb_emb_indices[b_i].remove(fb_choice)
@@ -515,27 +518,21 @@ class Router(nn.Module):
 
                     # Verify the builder did not fail
                     assert builders[b_i].attempt_add_fb(cur_fb, i)
+            
 
-            # Update fb input embedding choice for next input
-            #fb_emb_choice = self.fb_embs(torch.tensor(fb_choices).cuda())
 
-            # Setup next state
-            if i +1 < self.args.max_depth:
-                chosen_fbs = self.fb_embs(torch.tensor(actions).cuda())
-                state = torch.stack((enc_state, task_emb), 1)
-                # [batch_size, 3, hidden_size]
-                state = torch.cat((state, chosen_fbs), 1)
+            # Add actions for this timestep
+            actions_ep[i, :, :i+1] = torch.tensor(actions)
 
         return RouterResult(
             failed, 
             action_probs, 
-            actions, 
-            action_indices, 
+            actions_ep, 
             critic_outputs, 
             att_weights_list, 
             valid_fbs_ep,
             fb_count,
-            max_fbs) 
+            actions_masks) 
 
 
     def _get_valid_fbs(self, builder, fb_emb_indices, cur_depth, prev_actions):
@@ -572,10 +569,9 @@ class Router(nn.Module):
 
         return nondropped_fbs
     
-    def predict_step(self, imgs, task_id, valid_fbs, actions, actions_mask):
+    def predict_step(self, imgs, task_id, actions, fb_masks, action_masks):
         """Get action and value for timestep."""
         batch_size = imgs.shape[0]
-
 
         # Encode the state
         enc_state = self.state_encoder(imgs)
@@ -584,25 +580,16 @@ class Router(nn.Module):
         task_emb = self.task_embs(task_id)
         
         state = torch.stack((enc_state, task_emb), 1)
+
         if len(actions) > 0:
             # Embeddings for the current FBs in model
             fb_actions_embs = self.fb_embs(actions)
 
-            state = torch.cat((state, fb_actions_embs), 1)
+        task_emb = self.task_embs(task_id)
 
-        val_pred = self.critic(state, actions_mask)
-
-        # At the end v_t will contain the final critic output
-        # Get FB embeddings
-        valid_fbs = valid_fbs
-        valid_fb_embs = self.fb_embs(valid_fbs)
-
-        state_mask = torch.reshape(actions_mask, (actions_mask.shape[0], 1, 1, actions_mask.shape[1]))
-        fb_masks_batch = create_padding_mask(valid_fbs)
-
-        fb_probs, _ = self.trans_router(state, valid_fb_embs, fb_masks_batch, state_mask)
-
-        return fb_probs, val_pred
+        fb_probs, val_preds, _ = self.trans_router(
+            state, fb_actions_embs, fb_masks, action_masks)
+        return fb_probs.reshape(-1,fb_probs.shape[2]), val_preds
             
                 
         
