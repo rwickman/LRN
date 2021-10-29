@@ -211,5 +211,4 @@ def window_and_pad(valid_fbs_ep, actions, action_probs, max_depth, num_fbs):
 
 def create_lookahead_mask(size):
     return torch.triu(
-        torch.ones(size, size),
-        diagonal=1)
+        torch.ones(size, size))

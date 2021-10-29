@@ -30,7 +30,7 @@ class ClassifierTrainer(Trainer):
 
         # np.random.shuffle(self.train_data)
         # np.random.shuffle(self.test_data)
-        # self.train_data = self.train_data[:7000]
+        # self.train_data = self.train_data[:256]
         # self.test_data = self.test_data[:1024]
         
         for epoch in range(self.args.epochs):
@@ -40,13 +40,7 @@ class ClassifierTrainer(Trainer):
                 self._fb_count = torch.zeros(self._router.num_fbs + 1)
                 #tasks = #np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
                 task_ids = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
-                
-                
-                # if self.args.constraints and int(task) not in self.tasks:
-                #     continue
-                #plt.imshow(self.train_data[i % len(self.train_data)][1][0].transpose(1,2,0))
-                #plt.show()
-                #self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
+                task_ids = task_ids.unsqueeze(1)
                 
                 #print(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1].shape)
                 imgs = np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
@@ -55,7 +49,8 @@ class ClassifierTrainer(Trainer):
                 with torch.no_grad():
                     router_results = self._router(imgs, task_ids)
                 action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
-
+                action_probs = action_probs.reshape(-1, action_probs.shape[-1])
+                # print("action_probs.shape", action_probs.shape)
 
                 # Add reward bonus
                 rewards = torch.zeros_like(actions[-1], dtype=torch.float64).cuda()
@@ -76,30 +71,40 @@ class ClassifierTrainer(Trainer):
                 model_bce_losses.append(output_losses.tolist())
 
                 returns, advs, tdlamret = self.compute_return(rewards, critic_outputs)
-                # advs = torch.reshape(advs, (-1, ))
-                # tdlamret = torch.reshape(tdlamret, (-1, ))
+                advs = advs.reshape(-1)
+                tdlamret = tdlamret.reshape(-1)
 
                 # Create masks for decoder
                 # TODO: Update this to change shape and need to change predict_step critic reshaping as well
+                num_patches = (self.args.img_size**2) // self.args.patch_size
+                max_inp = 2 + num_patches + self.args.max_depth
+
+                # TODO: Update lookahead masks to include buffer 0s
                 fb_masks = create_lookahead_mask(self.args.max_depth).cuda()
+                # fb_masks torch.cat((torch.zeros(self.ar)))
 
                 # Reshape so you can treat each timestep as an example
-                action_masks = router_results.action_masks#.transpose(0,1)#router_results.action_masks.reshape(router_results.action_masks.shape[1],router_results.action_masks.shape[0], router_results.action_masks.shape[2])
+                action_masks = router_results.action_masks
+                actions_final = actions[-1].reshape(-1)
+                action_masks = action_masks.view(-1, action_masks.shape[2])
 
-                actions_final = actions[-1]
-                
-                actions_inp = torch.zeros(self.args.batch_size, self.args.max_depth, dtype=torch.int64).cuda()
-                actions_inp[:, 1:] = actions[-1, :, :-1]
-                
+                # Create actions per timestep, and remove the last timestep actions as input
+                temp_actions = torch.roll(actions.clone(), 1, 0)
+                temp_actions[0] = 0
+                actions_inp = temp_actions.transpose(0,1).reshape(-1, actions.shape[0])
 
+                # Repeat images and tasks IDs for each timstep
+                imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
+                task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
                 
-               
+                num_exs = self.args.max_depth * self.args.batch_size
+                
                 critic_outputs = critic_outputs.reshape(-1,1)
                 with torch.autograd.set_detect_anomaly(True):
                     total_critic_loss = 0
                     total_actor_loss = 0
                     for e_i in range(self.args.noptepochs):
-                        batch_ids = torch.arange(self.args.batch_size)
+                        batch_ids = torch.arange(num_exs)
                         loss = torch.zeros(1).cuda()
 
                         total_smooth_loss = 0
@@ -112,23 +117,21 @@ class ClassifierTrainer(Trainer):
                             start = m_i * (self.args.batch_size // self.args.nminibatches)
                             end = (m_i + 1) * (self.args.batch_size // self.args.nminibatches)
                             m_batch_idxs = batch_ids[start:end]
-
                             # Get prediction for current timestep
                             new_prob, val_pred = self._router.predict_step(
-                                imgs[m_batch_idxs],
-                                task_ids[m_batch_idxs],
+                                imgs_batch_steps[m_batch_idxs],
+                                task_ids_steps[m_batch_idxs],
                                 actions_inp[m_batch_idxs],
                                 fb_masks,
                                 action_masks[m_batch_idxs])
 
-
                             actor_loss, critic_loss = self.ppo_loss(
-                                advs[m_batch_idxs].view(-1), 
-                                action_probs[m_batch_idxs].reshape(-1,action_probs.shape[2]), 
+                                advs[m_batch_idxs], 
+                                action_probs[m_batch_idxs], 
                                 new_prob, 
-                                tdlamret[m_batch_idxs].view(-1), 
+                                tdlamret[m_batch_idxs], 
                                 val_pred.view(-1),
-                                actions_final[m_batch_idxs].flatten().unsqueeze(1))
+                                actions_final[m_batch_idxs].unsqueeze(1))
                             
                             # # TODO: DELETE THIS
                             # import sys
@@ -272,15 +275,16 @@ class ClassifierTrainer(Trainer):
             #for k,v in self.args.constraints.items():
             y_trues = np.zeros(len(self.test_data))
             y_preds = np.zeros(len(self.test_data))
-            np.random.shuffle(self.test_data)
             for i in range(math.ceil(len(self.test_data)/self.args.batch_size)): 
-                task= torch.tensor(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
+                task_ids = torch.tensor(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
+                task_ids = task_ids.unsqueeze(1)
+                
                 imgs = np.vstack(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 1])
                 imgs = torch.tensor(imgs).cuda()
                 targets = self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2]
                 # print("task[0]", task[0], "targets[0]", targets[0])
                 y_trues[i*self.args.batch_size:(i+1)*self.args.batch_size] = targets
-                router_results = self._router(imgs, task, argmax=True, should_drop_fbs=False)
+                router_results = self._router(imgs, task_ids, argmax=True, should_drop_fbs=False)
                 
                 pred = self._fb_model(imgs, router_results.actions[-1])
 
@@ -295,7 +299,7 @@ class ClassifierTrainer(Trainer):
                 
                 # Add to action count and prob
                 for t in range(self.args.max_depth):
-                    for b_i in range(task.shape[0]):
+                    for b_i in range(task_ids.shape[0]):
                         # print("router_results.actions[-1, b_i, t]", router_results.actions[-1, b_i, t])
                         action_count[router_results.actions[-1, b_i, t]] += 1
                         # for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):

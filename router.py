@@ -6,6 +6,9 @@ import numpy as np
 import random
 from typing import List
 from torch.nn.utils.rnn import pad_sequence
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
+
 
 from model_util import *
 from model_builder import ModelBuilder
@@ -46,7 +49,7 @@ class MultiHeadAttention(nn.Module):
         
         scaled_att_logits = qk / torch.sqrt(dk)
         if mask is not None:
-            scaled_att_logits += (mask * -1e9)
+            scaled_att_logits[:, :, -self.args.max_depth:, -self.args.max_depth:] += (mask * -1e9)
             
         att_weights = F.softmax(scaled_att_logits, dim=-1)
         scaled_att = torch.matmul(att_weights, v)
@@ -68,10 +71,18 @@ class PointWiseFFN(nn.Module):
         self.args = args
         self.fc1 = nn.Linear(self.args.hidden_size, self.args.dff)
         self.fc2 = nn.Linear(self.args.dff, self.args.hidden_size)
+
+        self.act1 = nn.GELU()
+
+        self.dropout1 = nn.Dropout(self.args.drop_rate)
+        self.dropout2 = nn.Dropout(self.args.drop_rate)
+
        
     def forward(self, x):
-        pw_out = F.relu(self.fc1(x))
+        pw_out = self.act1(self.fc1(x))
+        pw_out = self.dropout1(pw_out)
         pw_out = self.fc2(pw_out)
+        pw_out = self.dropout2(pw_out)
        
         return pw_out
 
@@ -93,51 +104,48 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x, mask=None):
         # Perform MHA attention
-        att_out, _ = self.mha(x, x, x, mask)
-        att_out = self.dropout1(att_out)
-        mha_out = self.norm1(x + att_out)
+        x = self.norm1(x)
+        att_out, att_weights = self.mha(x, x, x, mask)
+        x = self.norm2(att_out + x)
 
         # Plug through Point-wise FFN
-        pw_ffn_out = self.pw_ffn(mha_out)
-        pw_ffn_out = self.dropout2(pw_ffn_out)
-        out = self.norm2(mha_out + pw_ffn_out)
+        x = self.pw_ffn(x) + x        
+        return x, att_weights
+
+# class DecoderLayer(nn.Module):
+#     def __init__(self, args):
+#         super().__init__()
+#         self.args = args
+
+#         self.mha1 = MultiHeadAttention(self.args)
+#         self.mha2 = MultiHeadAttention(self.args)
+
+#         self.pw_ffn = PointWiseFFN(self.args)
+
+#         self.dropout1 = nn.Dropout(self.args.drop_rate)
+#         self.dropout2 = nn.Dropout(self.args.drop_rate)
+#         self.dropout3 = nn.Dropout(self.args.drop_rate)
         
-        return out
-
-class DecoderLayer(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-
-        self.mha1 = MultiHeadAttention(self.args)
-        self.mha2 = MultiHeadAttention(self.args)
-
-        self.pw_ffn = PointWiseFFN(self.args)
-
-        self.dropout1 = nn.Dropout(self.args.drop_rate)
-        self.dropout2 = nn.Dropout(self.args.drop_rate)
-        self.dropout3 = nn.Dropout(self.args.drop_rate)
-        
-        self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
-        self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
-        self.norm3 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+#         self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+#         self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+#         self.norm3 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
     
-    def forward(self, x, enc_output, look_ahead_mask=None):
-        # Preform self attention over available fbs
-        att_out, att_weights1 = self.mha1(x, x, x, look_ahead_mask)
-        att_out = self.dropout1(att_out)
-        mha_out1 = self.norm1(x + att_out)
+#     def forward(self, x, enc_output, look_ahead_mask=None):
+#         # Preform self attention over available fbs
+#         att_out, att_weights1 = self.mha1(x, x, x, look_ahead_mask)
+#         att_out = self.dropout1(att_out)
+#         mha_out1 = self.norm1(x + att_out)
 
-        # Perform attention over encoder output
-        enc_att_out, att_weights2 = self.mha2(mha_out1, enc_output, enc_output)
-        enc_att_out = self.dropout2(enc_att_out)
-        mha_out2 = self.norm2(mha_out1 + enc_att_out)
+#         # Perform attention over encoder output
+#         enc_att_out, att_weights2 = self.mha2(mha_out1, enc_output, enc_output)
+#         enc_att_out = self.dropout2(enc_att_out)
+#         mha_out2 = self.norm2(mha_out1 + enc_att_out)
 
-        pw_ffn_out = self.pw_ffn(mha_out2)
-        pw_ffn_out = self.dropout3(pw_ffn_out)
-        out = self.norm3(mha_out2 + pw_ffn_out)
+#         pw_ffn_out = self.pw_ffn(mha_out2)
+#         pw_ffn_out = self.dropout3(pw_ffn_out)
+#         out = self.norm3(mha_out2 + pw_ffn_out)
 
-        return out, att_weights1, att_weights2
+#         return out, att_weights1, att_weights2
 
 class Encoder(nn.Module):
     def __init__(self, args, num_enc_layers=1):
@@ -147,8 +155,15 @@ class Encoder(nn.Module):
         self.enc_layers = nn.ModuleList([EncoderLayer(self.args) for _ in range(num_enc_layers)])
         
         self.dropout = nn.Dropout(self.args.drop_rate)
-    
-        self.pos_enc = positional_encoding(self.args.max_pos_enc, self.args.hidden_size)
+
+        # Create learned positional encodings
+        num_patches = (self.args.img_size**2) // self.args.patch_size
+        max_inp = 2 + num_patches + self.args.max_depth
+        self.pos_enc = nn.Parameter(torch.randn(1, max_inp, self.args.hidden_size))
+        
+
+
+        # self.pos_enc = positional_encoding(self.args.max_pos_enc, self.args.hidden_size)
 
     def forward(self, x, mask=None):
         """
@@ -160,42 +175,42 @@ class Encoder(nn.Module):
 
         # Run through all encoder fb
         for enc_layer in self.enc_layers:
-            x = enc_layer(x, mask)
+            x, att_weights = enc_layer(x, mask)
         
         # Return output of last encoder fb
-        return x
-
-class Decoder(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-
-        self.pos_enc = positional_encoding(self.args.max_pos_enc, self.args.hidden_size)
-
-        self.dec_layers = nn.ModuleList([DecoderLayer(self.args) for _ in range(self.args.num_enc_layers)])
-        
-        self.dropout = nn.Dropout(self.args.drop_rate)
-    
-    def forward(self, x, enc_output, fb_mask=None):
-        """Args:
-            x: Tensor of available fb embeddings.
-            enc_output: Tensor of output of last encoder fb.
-        """
-        num_fbs = x.shape[1]
-        x = x * torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
-        x += self.pos_enc[:, :num_fbs, :]
-        x = self.dropout(x)
-        
-        att_weights = {}
-
-        # Run through all decoder fbs
-        for i, dec_layer in enumerate(self.dec_layers):
-            x, att_weights1, att_weights2 = dec_layer(x, enc_output, fb_mask)
-
-            att_weights['decoder_fb{}_weights1'.format(i+1)] = att_weights1
-            att_weights['decoder_fb{}_weights2'.format(i+1)] = att_weights2
-
         return x, att_weights
+
+# class Decoder(nn.Module):
+#     def __init__(self, args):
+#         super().__init__()
+#         self.args = args
+
+#         self.pos_enc = positional_encoding(self.args.max_pos_enc, self.args.hidden_size)
+
+#         self.dec_layers = nn.ModuleList([DecoderLayer(self.args) for _ in range(self.args.num_enc_layers)])
+        
+#         self.dropout = nn.Dropout(self.args.drop_rate)
+    
+#     def forward(self, x, enc_output, fb_mask=None):
+#         """Args:
+#             x: Tensor of available fb embeddings.
+#             enc_output: Tensor of output of last encoder fb.
+#         """
+#         num_fbs = x.shape[1]
+#         x = x * torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
+#         x += self.pos_enc[:, :num_fbs, :]
+#         x = self.dropout(x)
+        
+#         att_weights = {}
+
+#         # Run through all decoder fbs
+#         for i, dec_layer in enumerate(self.dec_layers):
+#             x, att_weights1, att_weights2 = dec_layer(x, enc_output, fb_mask)
+
+#             att_weights['decoder_fb{}_weights1'.format(i+1)] = att_weights1
+#             att_weights['decoder_fb{}_weights2'.format(i+1)] = att_weights2
+
+#         return x, att_weights
 
 
 class TransformerRouter(nn.Module):
@@ -203,9 +218,14 @@ class TransformerRouter(nn.Module):
         super().__init__()
         self.args = args
         self.num_mod = num_mod
-
+        
+        # Token for prediction the actor prediction and critic
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.args.hidden_size))
+        
+        
         self.encoder = Encoder(self.args, self.args.num_enc_layers)
-        self.decoder = Decoder(self.args)
+        
+        # self.decoder = Decoder(self.args)
 
         # Maps each decorder embedding to 1 value
         #self.actor_out1 = nn.Linear(self.args.hidden_size, 1)
@@ -219,17 +239,27 @@ class TransformerRouter(nn.Module):
         
         #self.actor_out2 = nn.Linear(self.args.hidden_size, 1)
 
-    def forward(self, state, fb_embs, fb_mask=None, action_mask=None):
-        enc_output = self.encoder(state)
-        dec_output, att_weights = self.decoder(
-            fb_embs, enc_output, fb_mask)
+    def forward(self, state, fb_mask=None, action_mask=None):
+       
+        # Add prediction token to state
+        cls_tokens = repeat(self.cls_token, '() n d -> b n d', b = state.shape[0])
+        state = torch.cat((cls_tokens, state), 1)
+        
+        enc_output, att_weights = self.encoder(state, fb_mask)
+        
+
+        
+        # dec_output, att_weights = self.decoder(
+        #     fb_embs, enc_output, fb_mask)
         
         # batch size, len(fb_embs)
-        actor_out = F.relu(self.actor_out1(dec_output))
+
+        # Get the class prediction
+        actor_out = F.gelu(self.actor_out1(enc_output[:, 0]))
         actor_out = self.actor_out2(actor_out)
 
 
-        val_preds = F.relu(self.critic_out1(dec_output))
+        val_preds = F.gelu(self.critic_out1(enc_output[:, 0]))
         val_preds = self.critic_out2(val_preds)
 
         # Apply masks over invalid actions
@@ -237,70 +267,70 @@ class TransformerRouter(nn.Module):
             actor_out += action_mask * -1e9
 
         # Get probabilities over modules
-        fb_probs = F.softmax(actor_out, dim=-1)
+        fb_probs = F.softmax(actor_out, dim=1)
 
         return fb_probs, val_preds, att_weights
 
-class Attention(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
+# class Attention(nn.Module):
+#     def __init__(self, args):
+#         super().__init__()
+#         self.args = args
 
-        # W for hidden state
-        self.hidden_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+#         # W for hidden state
+#         self.hidden_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
         
-        # W for encoded state
-        self.state_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+#         # W for encoded state
+#         self.state_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
-        # W for fb embeddings
-        self.fb_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+#         # W for fb embeddings
+#         self.fb_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
-         # W for fb embeddings
-        self.task_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+#          # W for fb embeddings
+#         self.task_W = nn.Linear(self.args.hidden_size, self.args.hidden_size)
 
-        self.V = nn.Linear(self.args.hidden_size, 1)
+#         self.V = nn.Linear(self.args.hidden_size, 1)
 
-        self.mha = MultiHeadAttention(args)
+#         self.mha = MultiHeadAttention(args)
 
-        self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
-        self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
-        self.pw_ffn = PointWiseFFN(self.args)
+#         self.norm1 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+#         self.norm2 = nn.LayerNorm(self.args.hidden_size, eps=1e-6)
+#         self.pw_ffn = PointWiseFFN(self.args)
 
-        self.dropout1 = nn.Dropout(self.args.drop_rate)
-        self.dropout2 = nn.Dropout(self.args.drop_rate)
+#         self.dropout1 = nn.Dropout(self.args.drop_rate)
+#         self.dropout2 = nn.Dropout(self.args.drop_rate)
 
 
         
-    def forward(self, fb_embs, hidden_state, enc_state, task_emb):
-        inp = torch.cat((fb_embs.squeeze(0), hidden_state, enc_state, task_emb))
-        mha_out, _ = self.mha(inp, inp, inp)
-        mha_out = self.dropout1(mha_out)
-        mha_out = self.norm1(mha_out + inp)
+#     def forward(self, fb_embs, hidden_state, enc_state, task_emb):
+#         inp = torch.cat((fb_embs.squeeze(0), hidden_state, enc_state, task_emb))
+#         mha_out, _ = self.mha(inp, inp, inp)
+#         mha_out = self.dropout1(mha_out)
+#         mha_out = self.norm1(mha_out + inp)
         
-        pw_out = self.pw_ffn(mha_out)
-        pw_out = self.dropout2(pw_out)
-        out = self.norm2(pw_out + mha_out)
+#         pw_out = self.pw_ffn(mha_out)
+#         pw_out = self.dropout2(pw_out)
+#         out = self.norm2(pw_out + mha_out)
 
 
-        # (batch_size, num_fbs, hidden_size)
-        fb_trans = self.fb_W(out[:-3])
+#         # (batch_size, num_fbs, hidden_size)
+#         fb_trans = self.fb_W(out[:-3])
         
-        # (batch_size, hidden_size)
-        hidden_trans = self.hidden_W(out[-3].unsqueeze(0)).unsqueeze(1)
+#         # (batch_size, hidden_size)
+#         hidden_trans = self.hidden_W(out[-3].unsqueeze(0)).unsqueeze(1)
         
-        state_trans = self.state_W(out[-2].unsqueeze(0)).unsqueeze(1)
+#         state_trans = self.state_W(out[-2].unsqueeze(0)).unsqueeze(1)
 
-        task_trans = self.task_W(out[-1].unsqueeze(0)).unsqueeze(1)
+#         task_trans = self.task_W(out[-1].unsqueeze(0)).unsqueeze(1)
 
-        # (batch_size, num_fbs)
-        u_i = self.V(torch.tanh(fb_trans + hidden_trans + state_trans + task_trans)).squeeze(-1)
+#         # (batch_size, num_fbs)
+#         u_i = self.V(torch.tanh(fb_trans + hidden_trans + state_trans + task_trans)).squeeze(-1)
     
-        # Scale the output
-        u_i = u_i / torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
+#         # Scale the output
+#         u_i = u_i / torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32))
 
-        # Predictions over fbs
-        fb_probs = F.softmax(u_i, dim=-1)
-        return fb_probs
+#         # Predictions over fbs
+#         fb_probs = F.softmax(u_i, dim=-1)
+#         return fb_probs
 
 
 class MuJoCoEncoder(nn.Module):
@@ -318,74 +348,60 @@ class MuJoCoEncoder(nn.Module):
         return self.fc3(obs)
 
 class ImgEncoder(nn.Module):
+    """Create patch embeddings for a given image."""
     def __init__(self, args):
         super().__init__()
         self.args = args
+        patch_dim = self.args.patch_size ** 2 * self.args.in_channels
+        self.to_patch_embedding = nn.Sequential(
+            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = self.args.patch_size, p2 = self.args.patch_size),
+            nn.Linear(patch_dim, self.args.hidden_size),
+        )
 
-        self.conv1 = nn.Conv2d(self.args.in_channels, 32, 3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
+    def forward(self, imgs):
+        # Extract patches and embed them
+        patches = self.to_patch_embedding(imgs)
+        return patches
 
-        self.norm1 = nn.InstanceNorm2d(32, affine=True, eps=1e-6)
-        self.norm2 = nn.InstanceNorm2d(32, affine=True, eps=1e-6)
-                
-        self.flatten = nn.Flatten()
-        self.drop1 = nn.Dropout(self.args.drop_rate)
         
-        # Compute output size of last conv fb
-        conv2d_out_size = conv2d_out(
-            conv2d_out(self.args.img_size, 3, 1, 1),
-         3, 1, 1)
-        num_units = int(conv2d_out_size**2 * 32)
-        self.fc1 = nn.Linear(num_units, self.args.hidden_size)
-        #self.fc2 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
-
-    def forward(self, state):
-        state = F.relu(self.norm1(self.conv1(state)))
-        #state = F.relu(self.conv1(state))
-        state = F.relu(self.norm2(self.conv2(state)))
-        #state = F.relu(self.norm3(self.conv3(state)))
-        state = self.flatten(state)
-        state = self.drop1(state)
-        # state =self.fc1(state)
-        return self.fc1(state)
 
 
-class Critic(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-        self.critic_encoder = Encoder(self.args, self.args.num_enc_layers)
+# class Critic(nn.Module):
+#     def __init__(self, args):
+#         super().__init__()
+#         self.args = args
+#         self.critic_encoder = Encoder(self.args, self.args.num_enc_layers)
 
-        #self.critic_out1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
-        self.critic_out1 = nn.Linear(self.args.hidden_size, 1)
+#         #self.critic_out1 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+#         self.critic_out1 = nn.Linear(self.args.hidden_size, 1)
         
-        self.critic_out2 = nn.Linear(self.args.hidden_size, 1)
+#         self.critic_out2 = nn.Linear(self.args.hidden_size, 1)
 
 
 
-    def forward(self, state, fb_mask=None):
-        if fb_mask is not None:
-            state_mask = torch.reshape(fb_mask, (fb_mask.shape[0], 1, 1, fb_mask.shape[1]))
-        else:
-            state_mask = None
+#     def forward(self, state, fb_mask=None):
+#         if fb_mask is not None:
+#             state_mask = torch.reshape(fb_mask, (fb_mask.shape[0], 1, 1, fb_mask.shape[1]))
+#         else:
+#             state_mask = None
 
-        enc_output = self.critic_encoder(state, state_mask)
+#         enc_output = self.critic_encoder(state, state_mask)
 
-        att_logits = self.critic_out1(enc_output)
+#         att_logits = self.critic_out1(enc_output)
 
-        if fb_mask is not None:
-            att_logits += (fb_mask.unsqueeze(-1) * -1e11)
+#         if fb_mask is not None:
+#             att_logits += (fb_mask.unsqueeze(-1) * -1e11)
 
-        dk = torch.tensor(att_logits.shape[-1], dtype=torch.float32)
-        att_logits = att_logits / torch.sqrt(dk)
+#         dk = torch.tensor(att_logits.shape[-1], dtype=torch.float32)
+#         att_logits = att_logits / torch.sqrt(dk)
         
-        state_att = F.softmax(att_logits, dim=1)
+#         state_att = F.softmax(att_logits, dim=1)
 
-        # Perform weight combination
-        comb_state = torch.matmul(state_att.transpose(2,1), enc_output)
-        out = self.critic_out2(comb_state)
+#         # Perform weight combination
+#         comb_state = torch.matmul(state_att.transpose(2,1), enc_output)
+#         out = self.critic_out2(comb_state)
 
-        return out
+#         return out
 
 class Router(nn.Module):
     def __init__(self, args, num_tasks, get_fb_fn, num_fbs):
@@ -407,7 +423,7 @@ class Router(nn.Module):
         else:
             self.state_encoder = ImgEncoder(self.args)
                 
-        self.critic = Critic(self.args)
+        # self.critic = Critic(self.args)
 
 
     def forward(self, imgs, task_id, argmax=False, should_drop_fbs=True):
@@ -474,13 +490,12 @@ class Router(nn.Module):
 
             # Get task embedding
             task_emb = self.task_embs(task_id)
-            
-            # Update the state
-            state = torch.stack((enc_state, task_emb), 1)
+            state = torch.cat((task_emb, enc_state, fb_embs), 1)
+
 
             # Get router prediction
             fb_probs, val_preds, att_weights = self.trans_router(
-                state, fb_embs, action_mask=actions_masks[:, i:i+1])
+                state, action_mask=actions_masks[:, i])
 
             # Update critic state
             critic_state = torch.cat((state, fb_embs), 1)
@@ -491,25 +506,24 @@ class Router(nn.Module):
             # Iterate over choices in a batch
             fb_choices = []
             for b_i in range(batch_size):
-                pass
                 # Choose a fbs
                 if argmax:
-                    fb_sample = fb_probs[b_i, -1].argmax()
+                    fb_sample = fb_probs[b_i].argmax()
                     fb_choice = int(fb_sample)#valid_fbs_batch[b_i][fb_sample]
                 else:
                     # Sample a fb
-                    fb_distr = Categorical(fb_probs[b_i, -1])
+                    fb_distr = Categorical(fb_probs[b_i])
                     fb_sample = fb_distr.sample()
                     fb_choice = int(fb_sample)#int(valid_fbs_batch[b_i][fb_sample])
-                    assert fb_probs[b_i, -1, fb_sample] != 0
+                    #assert fb_probs[b_i, -1, fb_sample] != 0
                 
                 # Each action needs to be associated with its index in the fb_probs
                 actions[b_i].append(fb_choice)
-                action_probs[b_i,i] = fb_probs[b_i, -1]
+                action_probs[b_i,i] = fb_probs[b_i]
                 fb_choices.append(fb_choice)
                 fb_count[fb_choice] += 1
                 # Set critic_outputs
-                critic_outputs[b_i,i] = val_preds[b_i, -1]
+                critic_outputs[b_i,i] = val_preds[b_i]
                 # Remove the fb choice
                 if fb_choice != PASS_FB:
                     fb_emb_indices[b_i].remove(fb_choice)
@@ -578,18 +592,19 @@ class Router(nn.Module):
 
         # Get task embedding
         task_emb = self.task_embs(task_id)
-        
-        state = torch.stack((enc_state, task_emb), 1)
 
         if len(actions) > 0:
             # Embeddings for the current FBs in model
-            fb_actions_embs = self.fb_embs(actions)
-
-        task_emb = self.task_embs(task_id)
+            fb_embs = self.fb_embs(actions)
+            state = torch.cat((task_emb, enc_state, fb_embs), 1)
+        else:
+            raise Exception("Require actions.")
+        
+        
 
         fb_probs, val_preds, _ = self.trans_router(
-            state, fb_actions_embs, fb_masks, action_masks)
-        return fb_probs.reshape(-1,fb_probs.shape[2]), val_preds
+            state, fb_masks, action_masks)
+        return fb_probs, val_preds
             
                 
         

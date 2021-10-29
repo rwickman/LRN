@@ -51,6 +51,8 @@ if __name__ == "__main__":
         help="Output model learning rate.")
     parser.add_argument("--fb_lr_gamma", type=float, default=0.97,
         help="Output modellearning rate decay gamma.")
+    parser.add_argument("--patch_size", type=int, default=16,
+        help="Patch size for ViT.")
 
     parser.add_argument("--batch_size", type=int, default=128,
         help="Batch size.")

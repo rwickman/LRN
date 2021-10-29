@@ -398,22 +398,12 @@ class Trainer(ABC):
         Returns:
             A tuple of PPO loss and value MSE loss 
         """
-        # print(actions)
-
-
+        # print("actions", actions)
         new_prob = new_prob.gather(1, actions).view(-1)
-        
         old_prob = old_prob.gather(1, actions).view(-1)
-        # print("new_prob", new_prob)
-        # print("old_prob", old_prob)
 
-        #new_prob = torch.log(torch.sum(actions_one_hot * new_prob, axis=-1))
-        #old_prob = torch.log(torch.sum(actions_one_hot * old_prob, axis=-1))
-        # print("new_prob", new_prob)
         # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
         ratio = new_prob / (old_prob.detach() + 1e-11)
-        # print("ratio", ratio)
-        # print("adv", adv)
         surrogate_1 = ratio * adv
 
         # Clipped policy gradient, ratio clipped between [0.8, 1.2]
@@ -427,7 +417,6 @@ class Trainer(ABC):
         # print("torch.min(surrogate_1, surrogate_2)", torch.min(surrogate_1, surrogate_2))
         # print("torch.min(surrogate_1, surrogate_2).mean()", torch.min(surrogate_1, surrogate_2).mean())
         policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
-
         # Value loss (MSE)
         #print("val_true", val_true[:5])
         #print("val_pred", val_pred.squeeze(-1).squeeze(-1)[:5], val_pred.shape)
@@ -443,9 +432,7 @@ class Trainer(ABC):
         # Clipped value loss
         #vf_losses2 = torch.square(val_true - val_pred_clipped)
         #vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
-        #print("val_pred", val_pred.shape)
-        #print("val_true", val_true.shape)
-        # print("val_pred", val_pred, "val_true", val_true)
+        #print("val_pred", val_pred, "val_true", val_true)
         
         vf_loss = self.critic_loss_fn(val_pred, val_true)
         #vf_loss = self.critic_loss_fn(val_pred.view(val_pred.shape[0]), val_true)
