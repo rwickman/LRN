@@ -26,10 +26,8 @@ class ClassifierTrainer(Trainer):
                 
     def train(self):
         critic_losses = []
-        model_bce_losses = []
 
         # np.random.shuffle(self.train_data)
-        # np.random.shuffle(self.test_data)
         # self.train_data = self.train_data[:256]
         # self.test_data = self.test_data[:1024]
         
@@ -49,7 +47,7 @@ class ClassifierTrainer(Trainer):
                 with torch.no_grad():
                     router_results = self._router(imgs, task_ids)
                 action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
-                action_probs = action_probs.reshape(-1, action_probs.shape[-1])
+                
                 # print("action_probs.shape", action_probs.shape)
 
                 # Add reward bonus
@@ -62,123 +60,20 @@ class ClassifierTrainer(Trainer):
                 # Reward based on model loss
                 rewards[:, -1] += -output_losses
 
-                if not self.args.no_reward_bonus:
-                    self._fb_count += router_results.fb_count
-                    
-                    bonus = self.layer_reward_bonus(actions[-1])
-                    rewards += bonus
-                
-                model_bce_losses.append(output_losses.tolist())
-
-                returns, advs, tdlamret = self.compute_return(rewards, critic_outputs)
-                advs = advs.reshape(-1)
-                tdlamret = tdlamret.reshape(-1)
-
-                # Create masks for decoder
-                # TODO: Update this to change shape and need to change predict_step critic reshaping as well
-                num_patches = (self.args.img_size**2) // self.args.patch_size
-                max_inp = 2 + num_patches + self.args.max_depth
-
-                # TODO: Update lookahead masks to include buffer 0s
-                fb_masks = create_lookahead_mask(self.args.max_depth).cuda()
-                # fb_masks torch.cat((torch.zeros(self.ar)))
-
-                # Reshape so you can treat each timestep as an example
-                action_masks = router_results.action_masks
-                actions_final = actions[-1].reshape(-1)
-                action_masks = action_masks.view(-1, action_masks.shape[2])
-
-                # Create actions per timestep, and remove the last timestep actions as input
-                temp_actions = torch.roll(actions.clone(), 1, 0)
-                temp_actions[0] = 0
-                actions_inp = temp_actions.transpose(0,1).reshape(-1, actions.shape[0])
-
-                # Repeat images and tasks IDs for each timstep
-                imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
-                task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
-                
-                num_exs = self.args.max_depth * self.args.batch_size
-                
-                critic_outputs = critic_outputs.reshape(-1,1)
-                with torch.autograd.set_detect_anomaly(True):
-                    total_critic_loss = 0
-                    total_actor_loss = 0
-                    for e_i in range(self.args.noptepochs):
-                        batch_ids = torch.arange(num_exs)
-                        loss = torch.zeros(1).cuda()
-
-                        total_smooth_loss = 0
-
-                        # Fraction of tasks allocated to layer over batch
-                        action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-
-                        for m_i in range(self.args.nminibatches):
-                            loss = torch.zeros(1).cuda()
-                            start = m_i * (self.args.batch_size // self.args.nminibatches)
-                            end = (m_i + 1) * (self.args.batch_size // self.args.nminibatches)
-                            m_batch_idxs = batch_ids[start:end]
-                            # Get prediction for current timestep
-                            new_prob, val_pred = self._router.predict_step(
-                                imgs_batch_steps[m_batch_idxs],
-                                task_ids_steps[m_batch_idxs],
-                                actions_inp[m_batch_idxs],
-                                fb_masks,
-                                action_masks[m_batch_idxs])
-
-                            actor_loss, critic_loss = self.ppo_loss(
-                                advs[m_batch_idxs], 
-                                action_probs[m_batch_idxs], 
-                                new_prob, 
-                                tdlamret[m_batch_idxs], 
-                                val_pred.view(-1),
-                                actions_final[m_batch_idxs].unsqueeze(1))
-                            
-                            # # TODO: DELETE THIS
-                            # import sys
-                            # sys.exit()
-
-                            total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
-                            total_actor_loss += actor_loss.detach().cpu().numpy()
-                            loss += actor_loss + self.args.critic_lam * critic_loss
-                            load_balance_loss = 0
-                            # if self.args.load_bal_lam > 0:
-                            #     load_balance_loss =self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
-                            #     loss += load_balance_loss
-                            # else:
-                            #     load_balance_loss = 0
-                            # if self.args.smooth_lam > 0.0:
-                            #     smooth_loss = self.label_smooth_loss(router_results, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
-                            #     loss += smooth_loss
-                            #     total_smooth_loss += smooth_loss.detach().cpu().numpy()                            
-
-                            loss.backward()
-                            torch.nn.utils.clip_grad_norm_(self._router.parameters(), self.args.max_grad_norm)
-                      
-                            self.optimizer.step()
-                            self.optimizer.zero_grad()
-
-                        critic_losses.append(total_critic_loss)
-                        
-                        #print("Entropy loss", -self.args.entropy_lam * torch.sum(action_probs[t][0] * torch.log(action_probs[t][0] +1e-10)))
-
-                        # Update router model
-                        # Load-balance loss
-
+                actor_losses, critic_losses = self.train_router(imgs, task_ids, rewards, router_results)
 
                 if i % 16 == 0:
                     #print("Output BCE Losses", output_losses)
                     print("router_results.fb_count", router_results.fb_count)
                     print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
                     # print("TOTAL ENP LOSS", total_enp_loss)
-                    print("CRITIC LOSS", total_critic_loss)
-                    print("TOTAL ACTOR LOSS", total_actor_loss)
-                    # print("load_balance_loss", load_balance_loss)
-                    # print("ACTION SMOOTHING LOSS", total_smooth_loss)
-                    print("\ntask", task_ids[0], " target", target[0])
+                    #print("CRITIC LOSS", total_critic_loss)
+                    #print("TOTAL ACTOR LOSS", total_actor_loss)
+                    #print("\ntask", task_ids[0], " target", target[0])
                     # for j, action_prob in enumerate(action_probs[0]):
                     #     print(f"action_probs[{j}]", action_prob)
-                    print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
-                    print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
+                    # print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
+                    # print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
                     # print("Avg ADV", self.adv_avg)
                     # print("STD ADV", self.adv_std)
                     
@@ -189,12 +84,12 @@ class ClassifierTrainer(Trainer):
                     print(router_results.actions[-1, -1], "\n")
                     print("router_results.action_probs[0, 0]", router_results.action_probs[0, 0], task_ids[0])
                     print("router_results.action_probs[0, 1]", router_results.action_probs[0, 1], task_ids[1])
+                    print("rewards", rewards[:3])
 
 
-            test_f1_score, test_acc_score, load_bal_loss, action_entropy, num_unused_fbs = self.test_models()
+            test_f1_score, test_acc_score, action_entropy, num_unused_fbs = self.test_models()
             self.test_results["test_f1_scores"].append(test_f1_score)
             self.test_results["test_acc_scores"].append(test_acc_score)
-            self.test_results["load_bal_loss"].append(load_bal_loss)
             self.test_results["action_entropy"].append(action_entropy)
             self.test_results["num_unused_fbs"].append(num_unused_fbs)
 
@@ -236,12 +131,6 @@ class ClassifierTrainer(Trainer):
         # plt.show()
         # self.save()
         
-        
-    # def compute_actor_bonus(self, new_prob):
-
-    #     for i in range(batch_size):
-    #         for j in range(depth):
-    #             if actions[i][j] != PASS_FB
 
 
 
@@ -275,6 +164,7 @@ class ClassifierTrainer(Trainer):
             #for k,v in self.args.constraints.items():
             y_trues = np.zeros(len(self.test_data))
             y_preds = np.zeros(len(self.test_data))
+            np.random.shuffle(self.test_data)
             for i in range(math.ceil(len(self.test_data)/self.args.batch_size)): 
                 task_ids = torch.tensor(self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
                 task_ids = task_ids.unsqueeze(1)
@@ -315,8 +205,6 @@ class ClassifierTrainer(Trainer):
                 print("F1 score of testing dataset", test_f1_score)
                 test_acc_score = np.sum(y_trues == y_preds) / len(y_trues)
                 print("Accuracy of testing dataset", test_acc_score)
-            load_bal_loss = 0#self.compute_load_balance_loss(action_prob_sum, action_count).cpu().tolist()[0]
-            print("LOAD BALANCE LOSS:", load_bal_loss)
  
             action_prob = action_count / action_count.sum()
             action_entropy = float(entropy(action_prob.cpu())[0])
@@ -326,13 +214,16 @@ class ClassifierTrainer(Trainer):
             print("ACTION COUNT: ", action_count)
             print("router_results.fb_count", router_results.fb_count)
             print("router_results.actions[-1, :5]", router_results.actions[-1, :5], "\n")
+            print("y_trues[0:5]", y_trues[0:5])
+            print("task_ids[0:5]", task_ids[0:5].squeeze(0))
             print("router_results.action_probs[0, :5]", router_results.action_probs[0, :5])
             print("router_results.action_probs[0, :5]", router_results.action_probs[0, :5])
+            
             
         
         self._router.train()
         self._fb_model.train()
-        return test_f1_score, test_acc_score, load_bal_loss, action_entropy, num_unused_fbs
+        return test_f1_score, test_acc_score, action_entropy, num_unused_fbs
 
     # def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions_one_hot):
     #     """PPO discreate loss function.

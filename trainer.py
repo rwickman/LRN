@@ -8,8 +8,7 @@ import json, os
 from router import Router
 from fb_model import FBModel
 from metaworld_fb_model import MetaWorldFBModel
-from model_util import PASS_FB
-from model_util import window_and_pad
+from model_util import PASS_FB, create_lookahead_mask
 
 class Trainer(ABC):
     
@@ -248,91 +247,95 @@ class Trainer(ABC):
     #     #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
     #     return bonus
 
-    def train_router(self, valid_fbs_ep, actions, action_indices, action_probs, max_fbs, x_batch_steps, task_ids_steps, returns, advs, tdlamret, critic_outputs):
+    def train_router(self, imgs, task_ids, rewards, router_results):
+        """Train the router on batches of experience."""
         critic_losses = []
         actor_losses = []
-        load_balance_losses = []
 
-        actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count, actions_batch = window_and_pad(
-            valid_fbs_ep,
-            actions,
-            action_indices,
-            action_probs,
-            self.args.max_depth,
-            max_fbs)
+        if not self.args.no_reward_bonus:
+            self._fb_count += router_results.fb_count
+            bonus = self.layer_reward_bonus(router_results.actions[-1])
+            rewards += bonus * 0.1
+        
 
-        x_batch_steps = torch.repeat_interleave(x_batch_steps, (self.args.max_depth), axis=0)
-        task_ids_steps = torch.repeat_interleave(task_ids_steps, self.args.max_depth)
-        num_exs = len(valid_fbs_ep_pad)
+        returns, advs, tdlamret = self.compute_return(rewards, router_results.critic_outputs)
+        advs = advs.reshape(-1)
+        tdlamret = tdlamret.reshape(-1)
+        returns = returns.reshape(-1)
 
+        # Create masks for decoder
+        # TODO: Update this to change shape and need to change predict_step critic reshaping as well
+        num_patches = (self.args.img_size**2) // self.args.patch_size**2
+        max_inp = 2 + num_patches + self.args.max_depth
+
+        # Create masks for modules
+        fb_masks = create_lookahead_mask(self.args.max_depth, self.args.batch_size, 2 + num_patches).cuda()
+        
+        # Reshape so you can treat each timestep as an example
+        actions_final = router_results.actions[-1].reshape(-1)
+        action_masks = router_results.action_masks.view(-1, router_results.action_masks.shape[2])
+
+        # Create actions per timestep, and remove the last timestep actions as input
+        temp_actions = torch.roll(router_results.actions.clone(), 1, 0)
+        temp_actions[0] = 0
+        actions_inp = temp_actions.transpose(0,1).reshape(-1, router_results.actions.shape[0])
+        
+        # Repeat images and tasks IDs for each timstep
+        imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
+        task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
+        num_exs = self.args.max_depth * self.args.batch_size
+        router_results.action_probs = router_results.action_probs.reshape(-1, router_results.action_probs.shape[-1])
         with torch.autograd.set_detect_anomaly(True):
             total_critic_loss = 0
             total_actor_loss = 0
-            total_load_balance_loss = 0
+            # TODO: Use a DataLoader for this
             for e_i in range(self.args.noptepochs):
                 batch_ids = torch.randperm(num_exs)
+                loss = torch.zeros(1).cuda()
 
                 for m_i in range(self.args.nminibatches):
                     loss = torch.zeros(1).cuda()
-                    start = m_i * (num_exs // self.args.nminibatches)
-                    end = (m_i + 1) * (num_exs // self.args.nminibatches)
+                    start = m_i * (self.args.batch_size // self.args.nminibatches)
+                    end = (m_i + 1) * (self.args.batch_size // self.args.nminibatches)
                     m_batch_idxs = batch_ids[start:end]
                     # Get prediction for current timestep
-                    #print("x_batch_steps[m_batch_idxs]", x_batch_steps[m_batch_idxs][:, :5])
                     new_prob, val_pred = self._router.predict_step(
-                        x_batch_steps[m_batch_idxs],
+                        imgs_batch_steps[m_batch_idxs],
                         task_ids_steps[m_batch_idxs],
-                        valid_fbs_ep_pad[m_batch_idxs],
-                        actions_window[m_batch_idxs],
-                        actions_mask[m_batch_idxs])
-                    
+                        actions_inp[m_batch_idxs],
+                        fb_masks[m_batch_idxs],
+                        action_masks[m_batch_idxs])
+
                     actor_loss, critic_loss = self.ppo_loss(
                         advs[m_batch_idxs], 
-                        action_probs_pad[m_batch_idxs], 
+                        router_results.action_probs[m_batch_idxs], 
                         new_prob, 
                         tdlamret[m_batch_idxs], 
-                        val_pred,
-                        actions_one_hot[m_batch_idxs],
-                        critic_outputs[m_batch_idxs].unsqueeze(-1))
+                        val_pred.view(-1),
+                        actions_final[m_batch_idxs].unsqueeze(1))
 
-                    
-
-                    loss += actor_loss + self.args.critic_lam * critic_loss
 
                     total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
+                    
                     total_actor_loss += actor_loss.detach().cpu().numpy()
-                    if self.args.load_bal_lam > 0:
-                        load_balance_loss = self.args.load_bal_lam * self.compute_load_balance_loss(valid_fbs_count[m_batch_idxs], valid_fbs_ep_pad[m_batch_idxs], new_prob, actions_batch[m_batch_idxs]) 
-                        total_load_balance_loss += load_balance_loss.detach().cpu().numpy()
-                        loss += load_balance_loss                          
-
-                    if self.args.smooth_lam > 0.0:
-                        smooth_loss = self.label_smooth_loss(action_indices, new_prob, valid_fbs_count[m_batch_idxs], actions_one_hot[m_batch_idxs], m_batch_idxs)
-                        loss += smooth_loss
-                        #total_smooth_loss += smooth_loss.detach().cpu().numpy()                            
-
+                    
+                    loss += actor_loss + self.args.critic_lam * critic_loss                        
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self._router.parameters(), self.args.max_grad_norm)
-                    print("self._router.critic.critic_out1.weight.grad.max()", self._router.critic.critic_out1.weight.grad.max())
-                    print("self._router.critic.critic_out2.weight.grad.max()", self._router.critic.critic_out2.weight.grad.max())
-                    print("self._router.state_encoder.fc1.weight.grad.max()", self._router.state_encoder.fc1.weight.grad.max())
-                    print("self._router.state_encoder.fc3.weight.grad.max()", self._router.state_encoder.fc3.weight.grad.max())
-                    print("self._router.state_encoder.fc3.weight.grad.min()", self._router.state_encoder.fc3.weight.grad.min())
-                    print("self._router.trans_router.actor_out1.weight.grad.min()", self._router.trans_router.actor_out1.weight.grad.min())
-                    print("self._router.trans_router.actor_out1.weight.grad.max()", self._router.trans_router.actor_out1.weight.grad.max())
+                
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
+
                 critic_losses.append(total_critic_loss)
                 actor_losses.append(total_actor_loss)
-                load_balance_losses.append(total_load_balance_loss)
 
         
-        print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
-        print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
-        print("critic_losses", critic_losses)
-        return actor_losses, critic_losses, load_balance_losses
+        # print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
+        # print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
+        # print("critic_losses", critic_losses)
+        return actor_losses, critic_losses
 
     def save(self):
         print("Saving models")
@@ -398,14 +401,13 @@ class Trainer(ABC):
         Returns:
             A tuple of PPO loss and value MSE loss 
         """
-        # print("actions", actions)
+
         new_prob = new_prob.gather(1, actions).view(-1)
-        old_prob = old_prob.gather(1, actions).view(-1)
+        old_prob = old_prob.gather(1, actions).view(-1) 
 
         # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
         ratio = new_prob / (old_prob.detach() + 1e-11)
         surrogate_1 = ratio * adv
-
         # Clipped policy gradient, ratio clipped between [0.8, 1.2]
         surrogate_2 = torch.clip(ratio, 1.0 - self.args.eps_clip, 1.0 + self.args.eps_clip) * adv
 
@@ -413,10 +415,9 @@ class Trainer(ABC):
         #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
         entropy_pen = 0
         # PPO loss, averaged over several batches
-        # print("surrogate_1, surrogate_2", surrogate_1, surrogate_2)
-        # print("torch.min(surrogate_1, surrogate_2)", torch.min(surrogate_1, surrogate_2))
-        # print("torch.min(surrogate_1, surrogate_2).mean()", torch.min(surrogate_1, surrogate_2).mean())
         policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
+        #policy_loss = -(torch.log(new_prob) * adv).mean()
+
         # Value loss (MSE)
         #print("val_true", val_true[:5])
         #print("val_pred", val_pred.squeeze(-1).squeeze(-1)[:5], val_pred.shape)

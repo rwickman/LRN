@@ -15,6 +15,8 @@ class RouterResult:
     valid_fbs_ep: List[List[int]]
     fb_count: torch.Tensor
     action_masks: List[torch.Tensor]
+    # Importance ratios for off-policy learning
+    imp_ratios: torch.Tensor
 
 PASS_FB = 0
 
@@ -209,6 +211,9 @@ def window_and_pad(valid_fbs_ep, actions, action_probs, max_depth, num_fbs):
     return actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count, actions_batch
 
 
-def create_lookahead_mask(size):
-    return torch.triu(
-        torch.ones(size, size))
+def create_lookahead_mask(size, batch_size, padding):
+    mask = torch.triu(
+        torch.ones(size, size)).repeat(batch_size, 1).reshape(size * batch_size, 1, 1, size)
+    mask = torch.cat((torch.zeros(size * batch_size, 1, 1, padding), mask), -1)
+    
+    return mask

@@ -43,20 +43,21 @@ if __name__ == "__main__":
         help="Latent size of the hidden state.")
     parser.add_argument("--max_depth", type=int, default=4,
         help="Latent size of the hidden state.")
-    parser.add_argument("--lr", type=float, default=1e-4,
+    parser.add_argument("--lr", type=float, default=5e-4,
         help="Router learning rate.")
     parser.add_argument("--lr_gamma", type=float, default=0.97,
         help="Router learning rate decay gamma.")
-    parser.add_argument("--fb_lr", type=float, default=1e-4,
+    parser.add_argument("--fb_lr", type=float, default=5e-4,
         help="Output model learning rate.")
     parser.add_argument("--fb_lr_gamma", type=float, default=0.97,
         help="Output modellearning rate decay gamma.")
     parser.add_argument("--patch_size", type=int, default=16,
         help="Patch size for ViT.")
 
+
     parser.add_argument("--batch_size", type=int, default=128,
         help="Batch size.")
-    parser.add_argument("--drop_rate", type=float, default=0.1,
+    parser.add_argument("--drop_rate", type=float, default=0.0,
         help="Dropout rate.")
     parser.add_argument("--fb_drop_rate", type=float, default=0.0,
         help="Layer dropout rate for router.")
