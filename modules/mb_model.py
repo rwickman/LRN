@@ -3,26 +3,10 @@ import torch.nn as nn
 import os
 from dataclasses import dataclass
 from model_util import PASS_FB
+from modules.module_block import ModuleBlock
 
-class FunctionBlock(nn.Module):
-    def __init__(self, layer, norm=None, act=None):
-        super().__init__()  
-        self.layer = layer
-        self.norm = norm
-        self.act = act
-    
-    def forward(self, x):
-        x = self.layer(x)
-        
-        if self.norm is not None:
-            x = self.norm(x)
-        
-        if self.act is not None:
-            x = self.act(x)
 
-        return x
-
-class FBModel(nn.Module):
+class ModuleBlockModel(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -31,16 +15,16 @@ class FBModel(nn.Module):
         self._hidden_size = 128
         self._conv_to_fc_in = (self.args.img_size//2)**2*self._num_filters
         self.max_pool = nn.MaxPool2d(2)
-        self.num_fb_types = 6
+        self.num_mb_types = 6
         self._init_layers()
-        #self.create_fb_probs()
+        #self.create_mb_probs()
 
     def _init_layers(self):
-        fbs = []
+        mbs = []
         for i in range(self.args.num_dup_layers):
             # Input layer
-            fbs.append(
-                    FunctionBlock(
+            mbs.append(
+                    ModuleBlock(
                         nn.Conv2d(self.args.in_channels, self._num_filters, self._filter_size, stride=1, padding=1),
                         nn.InstanceNorm2d(self._num_filters, affine=True, eps=1e-6), 
                         nn.ReLU()
@@ -48,24 +32,24 @@ class FBModel(nn.Module):
                 )
 
             # Hidden layers
-            fbs.append(
-                FunctionBlock(
+            mbs.append(
+                ModuleBlock(
                     nn.Conv2d(self._num_filters, self._num_filters, self._filter_size, stride=1, padding=1),
                     nn.InstanceNorm2d(self._num_filters, affine=True, eps=1e-6),
                     nn.ReLU()
                 )
             )
 
-            fbs.append(
-                FunctionBlock(
+            mbs.append(
+                ModuleBlock(
                     nn.Linear(self._conv_to_fc_in, self._hidden_size),
                     nn.LayerNorm(self._hidden_size, eps=1e-6),
                     nn.ReLU()
                 )
             )
             
-            fbs.append(
-                FunctionBlock(
+            mbs.append(
+                ModuleBlock(
                     nn.Linear(self._hidden_size, self._hidden_size),
                     nn.LayerNorm(self._hidden_size, eps=1e-6),
                     nn.ReLU()
@@ -73,103 +57,103 @@ class FBModel(nn.Module):
             )
 
             # Add last layers
-            fbs.append(
-                FunctionBlock(
+            mbs.append(
+                ModuleBlock(
                     nn.Linear(self._hidden_size, self.args.num_classes)
                 )
             )
 
-            fbs.append(
-                FunctionBlock(
+            mbs.append(
+                ModuleBlock(
                     nn.Linear(self._conv_to_fc_in, self.args.num_classes)
                 )
             )
         
-        self._fbs = nn.ModuleList(fbs)
+        self._mbs = nn.ModuleList(mbs)
         
         
-    def create_fb_probs(self):
-        self.fb_prob_dict = {}
+    def create_mb_probs(self):
+        self.mb_prob_dict = {}
         d = self.args.num_dup_layers
         
         if self.args.max_depth == 4:
-            self.fb_prob_dict["E0"] = 1/d
+            self.mb_prob_dict["E0"] = 1/d
 
-            self.fb_prob_dict["E1"] = 1/(2*d) + (d-1)/(2*d) * (1/(2*d-1))
-            self.fb_prob_dict["E2"] = 1/(2*d) + d/(2*d) * (1/(2*d-1))
-            self.fb_prob_dict["E3"] = 1/2 * (1/d)
-            self.fb_prob_dict["E4"] = 1/2 * (d/(2*d-1)) * (1/d) + 1/2 * 1 * (1/d)
-            self.fb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * (1/d)
+            self.mb_prob_dict["E1"] = 1/(2*d) + (d-1)/(2*d) * (1/(2*d-1))
+            self.mb_prob_dict["E2"] = 1/(2*d) + d/(2*d) * (1/(2*d-1))
+            self.mb_prob_dict["E3"] = 1/2 * (1/d)
+            self.mb_prob_dict["E4"] = 1/2 * (d/(2*d-1)) * (1/d) + 1/2 * 1 * (1/d)
+            self.mb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * (1/d)
         elif self.args.max_depth == 5:
-            self.fb_prob_dict["E0"] = 1/d
-            self.fb_prob_dict["E1"] = 1/(2*d) + (d-1)/(2*d) * (1/(2*d-1)) + ((d-1)/(2*d)) * ((d-2)/(2*d-1)) * (1/(2*d-2))
-            self.fb_prob_dict["E2"] = 1/(2*d) + d/(2*d) * (1/(2*d-1)) + (d/(2*d)) * ((d-1)/(2*d-1)) * (1/(2*d-2))
-            self.fb_prob_dict["E3"] = 1/2 * (1/d) + (1/2) * (d/(2*d-1)) * (1/d)
-            self.fb_prob_dict["E4"] = 1/2 * (d/(2*d-1)) * 1 * (1/d) +   (1/2) * 1 * 1 * (1/d) + (1/2) * ((d-1) / (2*d-1)) * (d/(2*d-2)) * (1/d)
-            self.fb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * ((d-2) / (2*d - 2)) * (1/d)
+            self.mb_prob_dict["E0"] = 1/d
+            self.mb_prob_dict["E1"] = 1/(2*d) + (d-1)/(2*d) * (1/(2*d-1)) + ((d-1)/(2*d)) * ((d-2)/(2*d-1)) * (1/(2*d-2))
+            self.mb_prob_dict["E2"] = 1/(2*d) + d/(2*d) * (1/(2*d-1)) + (d/(2*d)) * ((d-1)/(2*d-1)) * (1/(2*d-2))
+            self.mb_prob_dict["E3"] = 1/2 * (1/d) + (1/2) * (d/(2*d-1)) * (1/d)
+            self.mb_prob_dict["E4"] = 1/2 * (d/(2*d-1)) * 1 * (1/d) +   (1/2) * 1 * 1 * (1/d) + (1/2) * ((d-1) / (2*d-1)) * (d/(2*d-2)) * (1/d)
+            self.mb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * ((d-2) / (2*d - 2)) * (1/d)
         elif self.args.max_depth == 6:
-            # self.fb_prob_dict["E0"] = 1/d
-            # self.fb_prob_dict["E1"] = (1/(2*d)) \
+            # self.mb_prob_dict["E0"] = 1/d
+            # self.mb_prob_dict["E1"] = (1/(2*d)) \
             #                         + ((d-1)/(2*d)) * (1/(2*d-1)) \
             #                         + ((d-1)/(2*d)) *(d-2)/(2*d-1) * (1/(2*d-2)) \
             #                         + ((d-1)/(2*d)) * ((d-2)/(2*d-1)) * ((d-3)/(2*d-2)) * (1/(2*d-3))
-            # self.fb_prob_dict["E2"] = 1/(2*d) \
+            # self.mb_prob_dict["E2"] = 1/(2*d) \
             #                         + d/(2*d) * (1/(2*d-1)) \
             #                         + (d/(2*d)) * ((d-1)/(2*d-1)) * (1/(2*d-2)) \
             #                         + (d/(2*d)) * ((d-1)/(2*d-1)) * ((d-2)/(2*d-2)) * (1/(2*d-3))
-            # self.fb_prob_dict["E3"] = (1/2) * (1/d) \
+            # self.mb_prob_dict["E3"] = (1/2) * (1/d) \
             #                         + (1/2) * ((d-1)/d) * (1/(d-1)) \
             #                         + (1/2) * ((d-1)/d) * ((d-2)/(d-1)) * (1/(d-2)) \
             #                         + (1/2) * (d/(2*d-1)) * (1/d) \
             #                         + (1/2) * (d/(2*d-1)) * ((d-1)/d) * (1/(d-1)) \
             #                         + (1/2) * ((d-1)/(2*d-1)) * (d/(2*d-2)) * (1/d)
 
-            # self.fb_prob_dict["E4"] = (1/2) * 1 * 1 * 1 * (1/d) \
+            # self.mb_prob_dict["E4"] = (1/2) * 1 * 1 * 1 * (1/d) \
             #                         + (1/2) * (d/(2*d-1)) * 1 * 1 * (1/d) \
             #                         + (1/2) * ((d-1)/(2*d-1)) * ((d)/(2*d-2)) * 1 * (1/d) \
             #                         + (1/2) * ((d-1)/(2*d-1)) * ((d-2)/(2*d-2)) * (d/(2*d-3)) * (1/d)
     
-            # self.fb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * ((d-2) / (2*d - 2)) * ((d-3) / (2*d - 3)) * (1/d) 
-            self.fb_prob_dict["E0"] = 1/d
-            self.fb_prob_dict["E1"] = 0.10910541
-            self.fb_prob_dict["E2"] = 0.10910541
-            self.fb_prob_dict["E3"] = 0.24896173
-            self.fb_prob_dict["E4"] = 1/d
-            self.fb_prob_dict["E5"] = 1/d
+            # self.mb_prob_dict["E5"] = 1/2 * ((d-1) / (2*d - 1)) * ((d-2) / (2*d - 2)) * ((d-3) / (2*d - 3)) * (1/d) 
+            self.mb_prob_dict["E0"] = 1/d
+            self.mb_prob_dict["E1"] = 0.10910541
+            self.mb_prob_dict["E2"] = 0.10910541
+            self.mb_prob_dict["E3"] = 0.24896173
+            self.mb_prob_dict["E4"] = 1/d
+            self.mb_prob_dict["E5"] = 1/d
 
-            # self.fb_prob_dict["E0"] = 0.1#1/d
-            # self.fb_prob_dict["E1"] = 0.0338648#0.10910541
-            # self.fb_prob_dict["E2"] = 0.0338648#0.10910541
-            # self.fb_prob_dict["E3"] = 0.05133496#0.24896173
-            # self.fb_prob_dict["E4"] = 0.05681051#1/d
-            # self.fb_prob_dict["E5"] = 0.03443088#1/d
+            # self.mb_prob_dict["E0"] = 0.1#1/d
+            # self.mb_prob_dict["E1"] = 0.0338648#0.10910541
+            # self.mb_prob_dict["E2"] = 0.0338648#0.10910541
+            # self.mb_prob_dict["E3"] = 0.05133496#0.24896173
+            # self.mb_prob_dict["E4"] = 0.05681051#1/d
+            # self.mb_prob_dict["E5"] = 0.03443088#1/d
 
 
 
         
-        print(self.fb_prob_dict)
+        print(self.mb_prob_dict)
         
-        self.target_prob = torch.zeros(len(self._fbs)+1, 1).cuda()
+        self.target_prob = torch.zeros(len(self._mbs)+1, 1).cuda()
 
-        for a_i in range(len(self._fbs)):
-            fb_type = self.action_to_fb_type(a_i+1)
-            uni_fb_prob = self.get_fb_prob(fb_type)
-            self.target_prob[a_i+1] = uni_fb_prob
+        for a_i in range(len(self._mbs)):
+            mb_type = self.action_to_mb_type(a_i+1)
+            uni_mb_prob = self.get_mb_prob(mb_type)
+            self.target_prob[a_i+1] = uni_mb_prob
 
-    def action_to_fb_type(self, action):
+    def action_to_mb_type(self, action):
         if action == PASS_FB:
             return "E"
         else:
             return "E" + str((action-1) % 6)
     
-    def get_fb_num(self, action):
+    def get_mb_num(self, action):
         return (action - 1) % 6
 
-    def get_fb_prob(self, fb_type):
-        return self.fb_prob_dict[fb_type]
+    def get_mb_prob(self, mb_type):
+        return self.mb_prob_dict[mb_type]
 
-    def get_fb(self, idx):
-        return self._fbs[idx-1]
+    def get_mb(self, idx):
+        return self._mbs[idx-1]
     
     def forward(self, x, actions):
         """Forward the batch of inputs through the Function Blocks.
@@ -189,15 +173,15 @@ class FBModel(nn.Module):
             prev_layer = None
             for t, a_t in enumerate(actions[i]):
                 if a_t != PASS_FB:
-                    cur_fb =  self.get_fb(a_t)
-                    if isinstance(prev_layer, nn.Conv2d) and isinstance(cur_fb.layer, nn.Linear):
+                    cur_mb =  self.get_mb(a_t)
+                    if isinstance(prev_layer, nn.Conv2d) and isinstance(cur_mb.layer, nn.Linear):
                         cur_x = self.max_pool(cur_x)
                         cur_x = torch.flatten(cur_x, start_dim=1)
-                    cur_x = cur_fb(cur_x)
-                    prev_layer = cur_fb.layer
+                    cur_x = cur_mb(cur_x)
+                    prev_layer = cur_mb.layer
             y[i] = cur_x
 
         return y
 
-    def get_num_fbs(self):
-        return len(self._fbs)
+    def get_num_mbs(self):
+        return len(self._mbs)

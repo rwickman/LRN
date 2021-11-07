@@ -6,38 +6,31 @@ from abc import ABC, abstractmethod
 import json, os
 
 from router import Router
-from fb_model import FBModel
-from metaworld_fb_model import MetaWorldFBModel
 from model_util import PASS_FB, create_lookahead_mask
 
 class Trainer(ABC):
     
-    def __init__(self, args):
+    def __init__(self, args, mb_model):
         self.args = args
-        
-        if self.args.metaworld:
-            self._fb_model = MetaWorldFBModel(self.args).cuda()
-        else:
-            self._fb_model = FBModel(self.args).cuda()
-        
+        self._mb_model = mb_model.cuda()
         
         self._router = Router(
             self.args,
             self.args.num_tasks,
-            self._fb_model.get_fb,
-            self._fb_model.get_num_fbs()).cuda()
+            self._mb_model.get_mb,
+            self._mb_model.get_num_mbs()).cuda()
         print("ROUTER PARAMS: ", sum(p.numel() for p in self._router.parameters()))
-        print("FB MODEL PARAMS: ", sum(p.numel() for p in self._fb_model.parameters()))
+        print("FB MODEL PARAMS: ", sum(p.numel() for p in self._mb_model.parameters()))
         
         self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
         self._lr_scheduler = optim.lr_scheduler.MultiplicativeLR(self.optimizer, lr_lambda=lambda e: self.args.lr_gamma)
-        self.fb_optim = optim.Adam(self._fb_model.parameters(), lr=self.args.fb_lr)
-        self._fb_lr_scheduler = optim.lr_scheduler.MultiplicativeLR(self.fb_optim, lr_lambda=lambda e: self.args.fb_lr_gamma)
+        self.mb_optim = optim.Adam(self._mb_model.parameters(), lr=self.args.mb_lr)
+        self._mb_lr_scheduler = optim.lr_scheduler.MultiplicativeLR(self.mb_optim, lr_lambda=lambda e: self.args.mb_lr_gamma)
         self.adv_avg = torch.zeros(self.args.max_depth).cuda()
         self.adv_std = torch.ones(self.args.max_depth).cuda()
         self.critic_loss_fn = nn.SmoothL1Loss()
         self._action_smooth_loss = nn.KLDivLoss()
-        self._fb_count = torch.zeros(self._router.num_fbs + 1)
+        self._mb_count = torch.zeros(self._router.num_mbs + 1)
         if self.args.load:
             self.load()
         else:
@@ -46,14 +39,14 @@ class Trainer(ABC):
                 "test_acc_scores" : [],
                 "load_bal_loss" : [],
                 "action_entropy": [],
-                "num_unused_fbs" : []
+                "num_unused_mbs" : []
             }
 
-        # for param_group in self.fb_optim.param_groups:
-        #     print("fb_optim lr", param_group["lr"])
+        # for param_group in self.mb_optim.param_groups:
+        #     print("mb_optim lr", param_group["lr"])
         #     param_group["lr"] = 1e-4
         # for param_group in self.optimizer.param_groups:
-        #     #print("fb_optim lr", param_group["lr"])
+        #     #print("mb_optim lr", param_group["lr"])
         #     param_group["lr"] = 1e-4
         
     @abstractmethod
@@ -87,25 +80,25 @@ class Trainer(ABC):
             return returns, advs, tdlamret
 
 
-    def compute_load_balance_loss(self, valid_fbs_count, valid_fbs_ep_pad, new_prob, actions_batch):
+    def compute_load_balance_loss(self, valid_mbs_count, valid_mbs_ep_pad, new_prob, actions_batch):
         kl = torch.nn.KLDivLoss()
-        action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()        
-        batch_size = valid_fbs_ep_pad.shape[0]
-        action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+        action_prob_sum = torch.zeros(self._router.num_mbs + 1, 1).cuda()        
+        batch_size = valid_mbs_ep_pad.shape[0]
+        action_count = torch.zeros(self._router.num_mbs + 1, 1).cuda()
         #total_smooth_loss = torch.zeros(1).cuda()
         
         for b_i in range(batch_size):
-            num_valid_fbs = valid_fbs_count[b_i].int()
-            action_prob_sum[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += new_prob[b_i][:num_valid_fbs].unsqueeze(1)
-            action_count[valid_fbs_ep_pad[b_i][:num_valid_fbs]] += 1
+            num_valid_mbs = valid_mbs_count[b_i].int()
+            action_prob_sum[valid_mbs_ep_pad[b_i][:num_valid_mbs]] += new_prob[b_i][:num_valid_mbs].unsqueeze(1)
+            action_count[valid_mbs_ep_pad[b_i][:num_valid_mbs]] += 1
 
         # Get probability of each FB over batch
         action_idxs = action_count.squeeze(-1) > 0
         action_prob_sum[action_idxs] = action_prob_sum[action_idxs] / action_count[action_idxs]
         #print("action_prob_prob", action_prob_sum, "action_prob_sum.sum()", action_prob_sum.sum())
-        #print("self._fb_model.target_prob", self._fb_model.target_prob, "self._fb_model.target_prob.sum()", self._fb_model.target_prob.sum())
+        #print("self._mb_model.target_prob", self._mb_model.target_prob, "self._mb_model.target_prob.sum()", self._mb_model.target_prob.sum())
         # Cross-entropy loss
-        load_balance_loss = torch.mean(-self._fb_model.target_prob * torch.log(action_prob_sum + 1e-9))
+        load_balance_loss = torch.mean(-self._mb_model.target_prob * torch.log(action_prob_sum + 1e-9))
         #print("load_balance_loss", load_balance_loss)
         return load_balance_loss
 
@@ -115,46 +108,46 @@ class Trainer(ABC):
     #     batch_size = len(actions)
     #     depth = len(actions[0])
     #     bonus = torch.zeros((batch_size, depth)).cuda()
-    #     temp_fb_count = self._fb_count.clone()
-    #     temp_fb_count[PASS_FB] = 0
-    #     fb_count_max = temp_fb_count.max()
-    #     fb_count_min = temp_fb_count.min()
+    #     temp_mb_count = self._mb_count.clone()
+    #     temp_mb_count[PASS_FB] = 0
+    #     mb_count_max = temp_mb_count.max()
+    #     mb_count_min = temp_mb_count.min()
         
     #     # 1. Get counts for type
     #     # 2. If not all equal:
     #         # a. Give negative reward to one with most count
     #         # b. Give positive reward to one with least count
     #         # (Consider in future make this some sort of gradient)
-    #     # Iterate over actions, and assign the reward based on the fb_bonus
-    #     fb_bonus = torch.zeros(self._router.num_fbs)
-    #     fb_type_counts = torch.zeros(self._fb_model.num_fb_types, self.args.num_dup_layers)
-    #     for a_i in range(1, self._router.num_fbs+1):
-    #         fb_type = (a_i-1) % self._fb_model.num_fb_types
-    #         dup_num = (a_i-1)//self._fb_model.num_fb_types
-    #         #print(fb_type, dup_num, a_i)
-    #         fb_type_counts[fb_type, dup_num] = self._fb_count[a_i]
+    #     # Iterate over actions, and assign the reward based on the mb_bonus
+    #     mb_bonus = torch.zeros(self._router.num_mbs)
+    #     mb_type_counts = torch.zeros(self._mb_model.num_mb_types, self.args.num_dup_layers)
+    #     for a_i in range(1, self._router.num_mbs+1):
+    #         mb_type = (a_i-1) % self._mb_model.num_mb_types
+    #         dup_num = (a_i-1)//self._mb_model.num_mb_types
+    #         #print(mb_type, dup_num, a_i)
+    #         mb_type_counts[mb_type, dup_num] = self._mb_count[a_i]
         
-    #     #print("fb_type_counts", fb_type_counts)
+    #     #print("mb_type_counts", mb_type_counts)
         
-    #     fb_maxes = fb_type_counts.argmax(axis=1)
+    #     mb_maxes = mb_type_counts.argmax(axis=1)
         
-    #     fb_type_sums = fb_type_counts.sum() #fb_type_counts.sum(axis=1).unsqueeze(1)
-    #     # print("fb_maxes", fb_maxes)
-    #     # print("fb_type_sums", fb_type_sums)
-    #     # print("fb_type_counts", fb_type_counts)
-    #     fb_type_avgs = fb_type_counts / fb_type_sums
+    #     mb_type_sums = mb_type_counts.sum() #mb_type_counts.sum(axis=1).unsqueeze(1)
+    #     # print("mb_maxes", mb_maxes)
+    #     # print("mb_type_sums", mb_type_sums)
+    #     # print("mb_type_counts", mb_type_counts)
+    #     mb_type_avgs = mb_type_counts / mb_type_sums
 
-    #     #print("fb_type_avgs", fb_type_avgs)
-    #         # self._fb_count[a_i]
+    #     #print("mb_type_avgs", mb_type_avgs)
+    #         # self._mb_count[a_i]
         
     #     for i in range(batch_size):
     #         for j in range(depth):
     #             if actions[i][j] == 0:
     #                 bonus[i][j] = -1
-    #             fb_type = (actions[i][j]-1) % self._fb_model.num_fb_types
-    #             dup_num = (actions[i][j]-1)//self._fb_model.num_fb_types
-    #             #print("fb_type", fb_type, "fb_maxes[fb_type]", fb_maxes[fb_type], "dup_num", dup_num)
-    #             if fb_type_avgs[fb_type, dup_num] > 1/self.args.num_dup_layers:
+    #             mb_type = (actions[i][j]-1) % self._mb_model.num_mb_types
+    #             dup_num = (actions[i][j]-1)//self._mb_model.num_mb_types
+    #             #print("mb_type", mb_type, "mb_maxes[mb_type]", mb_maxes[mb_type], "dup_num", dup_num)
+    #             if mb_type_avgs[mb_type, dup_num] > 1/self.args.num_dup_layers:
     #                 bonus[i][j] = -1#actions[i][j]
     #             else:
     #                 bonus[i][j] = 1
@@ -169,22 +162,22 @@ class Trainer(ABC):
         depth = len(actions[0])
         bonus = torch.zeros((batch_size, depth)).cuda()
 
-        #fb_avgs = self._fb_count / self._fb_count.sum()
-        fb_count_min = self._fb_count.min()
-        fb_count_max = self._fb_count.max()
-        # print("fb_avgs", fb_avgs)
-        # print("fb_avgs.sum()", fb_avgs.sum())
-        #print("fb_type_avgs", fb_type_avgs)
-            # self._fb_count[a_i]
-        self._fb_count[PASS_FB] = 0
+        #mb_avgs = self._mb_count / self._mb_count.sum()
+        mb_count_min = self._mb_count.min()
+        mb_count_max = self._mb_count.max()
+        # print("mb_avgs", mb_avgs)
+        # print("mb_avgs.sum()", mb_avgs.sum())
+        #print("mb_type_avgs", mb_type_avgs)
+            # self._mb_count[a_i]
+        self._mb_count[PASS_FB] = 0
         for i in range(batch_size):
             for j in range(depth):
                 if actions[i][j] == PASS_FB:
                     bonus[i][j] = 0
                 else:
-                    #print("fb_type", fb_type, "fb_maxes[fb_type]", fb_maxes[fb_type], "dup_num", dup_num)
-                    bonus[i][j] += 1 - (self._fb_count[actions[i][j]] - fb_count_min) / (fb_count_max - fb_count_min)
-                # if fb_avgs[actions[i][j]] > 1/self.args.num_dup_layers:
+                    #print("mb_type", mb_type, "mb_maxes[mb_type]", mb_maxes[mb_type], "dup_num", dup_num)
+                    bonus[i][j] += 1 - (self._mb_count[actions[i][j]] - mb_count_min) / (mb_count_max - mb_count_min)
+                # if mb_avgs[actions[i][j]] > 1/self.args.num_dup_layers:
                 #     bonus[i][j] = -1
                 # else:
                 #     bonus[i][j] = 1
@@ -196,26 +189,26 @@ class Trainer(ABC):
     #     batch_size = len(actions)
     #     depth = len(actions[0])
     #     bonus = torch.zeros((batch_size, depth)).cuda()
-    #     temp_fb_count = self._fb_count.clone()
-    #     temp_fb_count[PASS_FB] = 0
-    #     fb_count_max = temp_fb_count.max()
-    #     fb_count_min = temp_fb_count.min()
+    #     temp_mb_count = self._mb_count.clone()
+    #     temp_mb_count[PASS_FB] = 0
+    #     mb_count_max = temp_mb_count.max()
+    #     mb_count_min = temp_mb_count.min()
         
     #     # Will need to calculate two things:
     #     # 1. (num times used / # eps) for each action
-    #         # a. ANS: fb_count / batch_Size
+    #         # a. ANS: mb_count / batch_Size
     #     # 2. P(not used at all)
     #         # a. How to know if a layer 
 
     #     for i in range(batch_size):
     #         for j in range(depth):
     #             if actions[i][j] != PASS_FB:
-    #                 fb_type = self._fb_model.action_to_fb_type(actions[i][j])
+    #                 mb_type = self._mb_model.action_to_mb_type(actions[i][j])
     #                 # Get the probability that equals the uniform sampling of this FB 
-    #                 uni_fb_prob = self._fb_model.get_fb_prob(fb_type)
-    #                 cur_fb_prob = self._fb_count[actions[i][j]] / batch_size
-    #                 log_loss = -(uni_fb_prob * torch.log(cur_fb_prob + 1e-5) + (1-uni_fb_prob) * torch.log((1-cur_fb_prob) + 1e-5) )
-    #                 prob_diff = (uni_fb_prob - cur_fb_prob)
+    #                 uni_mb_prob = self._mb_model.get_mb_prob(mb_type)
+    #                 cur_mb_prob = self._mb_count[actions[i][j]] / batch_size
+    #                 log_loss = -(uni_mb_prob * torch.log(cur_mb_prob + 1e-5) + (1-uni_mb_prob) * torch.log((1-cur_mb_prob) + 1e-5) )
+    #                 prob_diff = (uni_mb_prob - cur_mb_prob)
     #                 if abs(prob_diff) <= 0.05:
     #                     bonus[i][j] += 1
     #                 elif prob_diff < 0:
@@ -224,26 +217,26 @@ class Trainer(ABC):
     #                     bonus[i][j] += 1 - log_loss
 
 
-    #                 #log_loss = -(uni_fb_prob * torch.log(cur_fb_prob + 1e-5) + (1-uni_fb_prob) * torch.log((1-cur_fb_prob) + 1e-5) )
+    #                 #log_loss = -(uni_mb_prob * torch.log(cur_mb_prob + 1e-5) + (1-uni_mb_prob) * torch.log((1-cur_mb_prob) + 1e-5) )
     #                 #bonus[i][j] += -log_loss#bonus[i][j]
     #             else:
     #                 bonus[i][j] += -5
-    #                 # prob_diff = (uni_fb_prob - cur_fb_prob)**
+    #                 # prob_diff = (uni_mb_prob - cur_mb_prob)**
     #                 # if abs(prob_diff) < 0.1:
     #                 #     bonus[i][j] += 5
     #                 # else:     
     #                 #     bonus[i][j] += -5
                     
-    #             #         if cur_fb_prob < uni_fb_prob:
+    #             #         if cur_mb_prob < uni_mb_prob:
                         
     #             # else:
     #             #     bonus[i][j] += -5
-    #                 # if cur_fb_prob <= uni_fb_prob:
-    #                 #     bonus[i][j] += (1 - (uni_fb_prob - cur_fb_prob)) * 5
+    #                 # if cur_mb_prob <= uni_mb_prob:
+    #                 #     bonus[i][j] += (1 - (uni_mb_prob - cur_mb_prob)) * 5
     #                 # else:
-    #                 #      bonus[i][j] += (uni_fb_prob - cur_fb_prob) * 5
+    #                 #      bonus[i][j] += (uni_mb_prob - cur_mb_prob) * 5
     #             #bonus[i][j] = avg_reward[actions[i][j]]
-    #             #bonus[i][j] += 1 - self._fb_count[actions[i][j]]  / self._fb_count.sum()   
+    #             #bonus[i][j] += 1 - self._mb_count[actions[i][j]]  / self._mb_count.sum()   
     #     #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
     #     return bonus
 
@@ -253,7 +246,7 @@ class Trainer(ABC):
         actor_losses = []
 
         if not self.args.no_reward_bonus:
-            self._fb_count += router_results.fb_count
+            self._mb_count += router_results.mb_count
             bonus = self.layer_reward_bonus(router_results.actions[-1])
             rewards += bonus * 0.1
         
@@ -269,7 +262,7 @@ class Trainer(ABC):
         max_inp = 2 + num_patches + self.args.max_depth
 
         # Create masks for modules
-        fb_masks = create_lookahead_mask(self.args.max_depth, self.args.batch_size, 2 + num_patches).cuda()
+        mb_masks = create_lookahead_mask(self.args.max_depth, self.args.batch_size, 2 + num_patches).cuda()
         
         # Reshape so you can treat each timestep as an example
         actions_final = router_results.actions[-1].reshape(-1)
@@ -303,7 +296,7 @@ class Trainer(ABC):
                         imgs_batch_steps[m_batch_idxs],
                         task_ids_steps[m_batch_idxs],
                         actions_inp[m_batch_idxs],
-                        fb_masks[m_batch_idxs],
+                        mb_masks[m_batch_idxs],
                         action_masks[m_batch_idxs])
 
                     actor_loss, critic_loss = self.ppo_loss(
@@ -341,11 +334,11 @@ class Trainer(ABC):
         print("Saving models")
         model_dict = {
             "router" : self._router.state_dict(),
-            "fb_model" : self._fb_model.state_dict(),
-            "fb_optim" : self.fb_optim.state_dict(),
+            "mb_model" : self._mb_model.state_dict(),
+            "mb_optim" : self.mb_optim.state_dict(),
             "optimizer" : self.optimizer.state_dict(),
             "router_lr_scheduler" : self._lr_scheduler.state_dict(),
-            "fb_lr_scheduler" : self._fb_lr_scheduler.state_dict(),
+            "mb_lr_scheduler" : self._mb_lr_scheduler.state_dict(),
             "adv_avg" : self.adv_avg,
             "adv_std" : self.adv_std
         }
@@ -357,8 +350,8 @@ class Trainer(ABC):
         with open(os.path.join(self.args.save_dir, self.args.test_results), "w") as f:
             json.dump(self.test_results, f)
         
-        with open(os.path.join(self.args.save_dir, "fb_count.json"), "w") as f:
-            json.dump(self._fb_count.tolist(), f)
+        with open(os.path.join(self.args.save_dir, "mb_count.json"), "w") as f:
+            json.dump(self._mb_count.tolist(), f)
 
         with open(os.path.join(self.args.save_dir,"args.json"), "w") as f:
             json.dump(vars(self.args), f)
@@ -367,10 +360,10 @@ class Trainer(ABC):
         #self._router.load_state_dict(torch.load(os.path.join(self.args.save_dir, "router.pt")))
         model_dict = torch.load(os.path.join(self.args.save_dir, "router.pt"))
         self._router.load_state_dict(model_dict["router"])
-        self._fb_model.load_state_dict(model_dict["fb_model"])
-        self.fb_optim.load_state_dict(model_dict["fb_optim"])
+        self._mb_model.load_state_dict(model_dict["mb_model"])
+        self.mb_optim.load_state_dict(model_dict["mb_optim"])
         self._lr_scheduler.load_state_dict(model_dict["router_lr_scheduler"])
-        self._fb_lr_scheduler.load_state_dict(model_dict["fb_lr_scheduler"])
+        self._mb_lr_scheduler.load_state_dict(model_dict["mb_lr_scheduler"])
 
         self.optimizer.load_state_dict(model_dict["optimizer"])
         self.adv_avg = model_dict["adv_avg"]
@@ -382,10 +375,10 @@ class Trainer(ABC):
         with open(os.path.join(self.args.save_dir, self.args.test_results), "r") as f:
             self.test_results = json.load(f)
         
-        fb_count_json = os.path.join(self.args.save_dir, "fb_count.json")
-        if os.path.exists(fb_count_json):
-            with open(fb_count_json) as f:
-                self._fb_count = torch.tensor(json.load(f))
+        mb_count_json = os.path.join(self.args.save_dir, "mb_count.json")
+        if os.path.exists(mb_count_json):
+            with open(mb_count_json) as f:
+                self._mb_count = torch.tensor(json.load(f))
 
 
     def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions):
@@ -441,7 +434,7 @@ class Trainer(ABC):
         return  policy_loss, vf_loss
 
 
-    def label_smooth_loss(self, action_indices, new_prob, valid_fbs_count, actions_one_hot, m_batch_idxs):
+    def label_smooth_loss(self, action_indices, new_prob, valid_mbs_count, actions_one_hot, m_batch_idxs):
         """"Add label-smoothing loss."""
         batch_size = new_prob.shape[0]
         total_smooth_loss = torch.zeros(1).cuda()
@@ -450,13 +443,13 @@ class Trainer(ABC):
         b_i_old = m_batch_idxs // self.args.max_depth
         t_old = m_batch_idxs % self.args.max_depth
         for b_i in range(batch_size):
-            num_valid_fbs = valid_fbs_count[b_i].int()
-            if num_valid_fbs > 1:
-                max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_fbs
+            num_valid_mbs = valid_mbs_count[b_i].int()
+            if num_valid_mbs > 1:
+                max_action_prob = (1-self.args.alpha) + self.args.alpha/num_valid_mbs
                 if action_probs[b_i] > max_action_prob:
                     smooth_actions = torch.zeros_like(new_prob[b_i])
                     # Add prob to all valid actions
-                    smooth_actions[:num_valid_fbs] = self.args.alpha/num_valid_fbs
+                    smooth_actions[:num_valid_mbs] = self.args.alpha/num_valid_mbs
 
                     
                     # Add extra prob to selected action

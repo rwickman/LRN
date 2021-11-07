@@ -8,24 +8,24 @@ class ModelBuilder:
         self._prev_layer = None
         self._update_out_size()
 
-    def attempt_add_fb(self, cur_fb, cur_depth):
-        if is_valid_mapping(self._prev_layer, cur_fb.layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes, self.args.not_shorter_depth):
-            self._prev_layer = cur_fb.layer
+    def attempt_add_mb(self, cur_mb, cur_depth):
+        if is_valid_mapping(self._prev_layer, cur_mb.layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes, self.args.not_shorter_depth):
+            self._prev_layer = cur_mb.layer
             self._update_out_size()
             return True
         else:
             return False
 
-    def is_valid_fb(self, cur_fb, cur_depth):
+    def is_valid_mb(self, cur_mb, cur_depth):
 
-        if cur_fb is not None:
-            cur_layer = cur_fb.layer
+        if cur_mb is not None:
+            cur_layer = cur_mb.layer
         else:
             cur_layer = None
         if not self.args.metaworld: 
             return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.num_classes, self.args.not_shorter_depth)
         else:
-            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.mw_action_space * 2, self.args.not_shorter_depth)
+            return is_valid_mapping(self._prev_layer, cur_layer, self.cur_out_size, cur_depth, self.args.max_depth, self.args.mw_action_space, self.args.not_shorter_depth)
 
     def _update_out_size(self):
         if self._prev_layer is not None:
@@ -36,7 +36,7 @@ class ModelBuilder:
                     self._prev_layer.stride[0],
                     self._prev_layer.stride[0])
 
-                               # if i + 1 < len(self._fbs) and not isinstance(layer, nn.Flatten):
+                               # if i + 1 < len(self._mbs) and not isinstance(layer, nn.Flatten):
             #     model_arch.append(nn.ReLU())
                 self.cur_out_size = out_dim ** 2 * 32
             elif isinstance(self._prev_layer, nn.Linear):

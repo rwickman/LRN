@@ -1,23 +1,36 @@
 import argparse
 from classifier_trainer import ClassifierTrainer
-
+from ale_trainer import ALETrainer
+from modules.mb_model import ModuleBlockModel
+from modules.mb_model_rl import ModuleBlockModelRL
 #from rl_trainer import RLTrainer
 import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
 from mnist_benchmarks import run_mnist_benchmarks
 
+
 def main(args):
-    if args.run_mnist_benchmarks:
-        run_mnist_benchmarks(args)
-    else:
-        if args.metaworld:
-           #from cartpole_trainer import MetaWorldTrainer
-           from metaworld_trainer import MetaWorldTrainer
-           model_trainer = MetaWorldTrainer(args)
-           model_trainer.train()
-        else:
-            model_trainer = ClassifierTrainer(args) 
-            model_trainer.train()
+    # if self.args.metaworld:
+    #     self._mb_model = MetaWorldFBModel(self.args).cuda()
+    # else:
+    #     self._mb_model = FBModel(self.args).cuda()
+    # mb_model = ModuleModel(args)
+    # model_trainer = ALETrainer(args, mb_model)
+    # model_trainer.train()
+    # if args.run_mnist_benchmarks:
+    #     run_mnist_benchmarks(args)
+    # else:
+    #     if args.metaworld:
+    #        #from cartpole_trainer import MetaWorldTrainer
+    #        from metaworld_trainer import MetaWorldTrainer
+    #        model_trainer = MetaWorldTrainer(args)
+    #        model_trainer.train()
+    #     else:
+    #         model_trainer = ClassifierTrainer(args) 
+    #         model_trainer.train()
+    mb_model = ModuleBlockModel(args)
+    model_trainer = ClassifierTrainer(args, mb_model) 
+    model_trainer.train()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -47,9 +60,9 @@ if __name__ == "__main__":
         help="Router learning rate.")
     parser.add_argument("--lr_gamma", type=float, default=0.97,
         help="Router learning rate decay gamma.")
-    parser.add_argument("--fb_lr", type=float, default=5e-4,
+    parser.add_argument("--mb_lr", type=float, default=5e-4,
         help="Output model learning rate.")
-    parser.add_argument("--fb_lr_gamma", type=float, default=0.97,
+    parser.add_argument("--mb_lr_gamma", type=float, default=0.97,
         help="Output modellearning rate decay gamma.")
     parser.add_argument("--patch_size", type=int, default=16,
         help="Patch size for ViT.")
@@ -59,7 +72,7 @@ if __name__ == "__main__":
         help="Batch size.")
     parser.add_argument("--drop_rate", type=float, default=0.0,
         help="Dropout rate.")
-    parser.add_argument("--fb_drop_rate", type=float, default=0.0,
+    parser.add_argument("--mb_drop_rate", type=float, default=0.0,
         help="Layer dropout rate for router.")
     parser.add_argument("--num_dup_layers", type=int, default=4,
         help="Number of duplicate layers .")

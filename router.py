@@ -54,7 +54,7 @@ class MultiHeadAttention(nn.Module):
         att_weights = F.softmax(scaled_att_logits, dim=-1)
         scaled_att = torch.matmul(att_weights, v)
 
-        # (batch_size, fbs+hidden+enc_state, num_heads, depth)
+        # (batch_size, mbs+hidden+enc_state, num_heads, depth)
         scaled_att = scaled_att.transpose(2,1)
 
         # Squeeze MHA together for each embedding
@@ -130,17 +130,17 @@ class Encoder(nn.Module):
 
     def forward(self, x, mask=None):
         """
-            x: task emb, example emb, used fbs embs
+            x: task emb, example emb, used mbs embs
         """
         x = x * torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32)).cuda()
         x += self.pos_enc[:, :x.shape[1], :]
         x = self.dropout(x)
 
-        # Run through all encoder fb
+        # Run through all encoder mb
         for enc_layer in self.enc_layers:
             x, att_weights = enc_layer(x, mask)
         
-        # Return output of last encoder fb
+        # Return output of last encoder mb
         return x, att_weights
 
 
@@ -167,20 +167,20 @@ class TransformerRouter(nn.Module):
         
         #self.actor_out2 = nn.Linear(self.args.hidden_size, 1)
 
-    def forward(self, state, fb_mask=None, action_mask=None):
+    def forward(self, state, mb_mask=None, action_mask=None):
        
         # Add prediction token to state
         cls_tokens = repeat(self.cls_token, '() n d -> b n d', b = state.shape[0])
         state = torch.cat((cls_tokens, state), 1)
         
-        enc_output, att_weights = self.encoder(state, fb_mask)
+        enc_output, att_weights = self.encoder(state, mb_mask)
         
 
         
         # dec_output, att_weights = self.decoder(
-        #     fb_embs, enc_output, fb_mask)
+        #     mb_embs, enc_output, mb_mask)
         
-        # batch size, len(fb_embs)
+        # batch size, len(mb_embs)
 
         # Get the class prediction
         actor_out = F.gelu(self.actor_out1(enc_output[:, 0]))
@@ -195,9 +195,9 @@ class TransformerRouter(nn.Module):
             actor_out += action_mask * -1e9
 
         # Get probabilities over modules
-        fb_probs = F.softmax(actor_out, dim=1)
+        mb_probs = F.softmax(actor_out, dim=1)
 
-        return fb_probs, val_preds, att_weights
+        return mb_probs, val_preds, att_weights
 
 
 
@@ -234,17 +234,17 @@ class ImgEncoder(nn.Module):
         
 
 class Router(nn.Module):
-    def __init__(self, args, num_tasks, get_fb_fn, num_fbs):
+    def __init__(self, args, num_tasks, get_mb_fn, num_mbs):
         super().__init__()
         self.args = args
-        self.get_fb_fn = get_fb_fn
-        self.num_fbs = num_fbs
+        self.get_mb_fn = get_mb_fn
+        self.num_mbs = num_mbs
         self.num_tasks = num_tasks
-        self._valid_fbs_dict = {}
+        self._valid_mbs_dict = {}
 
-        self.trans_router = TransformerRouter(self.args, self.num_fbs)
+        self.trans_router = TransformerRouter(self.args, self.num_mbs)
 
-        self.fb_embs = nn.Embedding(self.num_fbs+1, self.args.hidden_size)
+        self.mb_embs = nn.Embedding(self.num_mbs+1, self.args.hidden_size)
 
         self.task_embs = nn.Embedding(self.num_tasks, self.args.hidden_size)
         
@@ -256,12 +256,12 @@ class Router(nn.Module):
         # self.critic = Critic(self.args)
 
 
-    def forward(self, imgs, task_id, argmax=False, should_drop_fbs=True):
+    def forward(self, imgs, task_id, argmax=False, should_drop_mbs=True):
         batch_size = imgs.shape[0]
 
         builders = [ModelBuilder(self.args) for _ in range(batch_size)]
 
-        fb_emb_indices = [list(range(self.num_fbs+1)) for _ in range(batch_size) ]
+        mb_emb_indices = [list(range(self.num_mbs+1)) for _ in range(batch_size) ]
 
         critic_outputs = torch.zeros(batch_size, self.args.max_depth, 1).cuda()
         # Store the state of the actions every timestep
@@ -270,44 +270,44 @@ class Router(nn.Module):
         
         actions = [[] for _ in range(batch_size)]
 
-        # fb_mask = torch.zeros(self.num_fbs+1).cuda()
+        # mb_mask = torch.zeros(self.num_mbs+1).cuda()
         failed = False
         cur_loss = None
-        action_probs = torch.zeros(batch_size, self.args.max_depth, self.num_fbs+1).cuda()
+        action_probs = torch.zeros(batch_size, self.args.max_depth, self.num_mbs+1).cuda()
         
         att_weights_list = [[] for _ in range(batch_size)]
-        valid_fbs_ep = [[] for _ in range(batch_size)]
+        valid_mbs_ep = [[] for _ in range(batch_size)]
         
-        fb_count = torch.zeros(self.num_fbs  + 1)
+        mb_count = torch.zeros(self.num_mbs  + 1)
 
         # Mask used for invalid actions
         actions_masks = torch.ones(
             batch_size,
             self.args.max_depth,
-            self.num_fbs+1).cuda()
+            self.num_mbs+1).cuda()
 
         # Importance ratios
         imp_ratios = torch.ones(batch_size, self.args.max_depth).cuda()
 
         # Build the model architecture 
         for i in range(self.args.max_depth):
-            # Update the valid fbs over the batch
-            valid_fbs_batch = []
+            # Update the valid mbs over the batch
+            valid_mbs_batch = []
             max_emb_len = 0
 
             for b_i in range(batch_size): 
                 if i  == 0:
-                    valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, None)
+                    valid_mbs = self._get_valid_mbs(builders[b_i], mb_emb_indices[b_i], i, None)
                 else:
-                    valid_fbs = self._get_valid_fbs(builders[b_i], fb_emb_indices[b_i], i, tuple(actions[b_i]))
-                # Perform fb dropout
-                if should_drop_fbs:
-                    valid_fbs = self.fb_dropout(valid_fbs)
-                valid_fbs_batch.append(torch.tensor(valid_fbs))
-                valid_fbs_ep[b_i].append(valid_fbs)
+                    valid_mbs = self._get_valid_mbs(builders[b_i], mb_emb_indices[b_i], i, tuple(actions[b_i]))
+                # Perform mb dropout
+                if should_drop_mbs:
+                    valid_mbs = self.mb_dropout(valid_mbs)
+                valid_mbs_batch.append(torch.tensor(valid_mbs))
+                valid_mbs_ep[b_i].append(valid_mbs)
                 
                 # Update module mask to only mask out invalid actions
-                actions_masks[b_i, i, valid_fbs] = 0
+                actions_masks[b_i, i, valid_mbs] = 0
             
             
             # Encode the state
@@ -320,54 +320,54 @@ class Router(nn.Module):
             if i == 0:
                 state = torch.cat((task_emb, enc_state), 1)                
             else:
-                fb_embs = self.fb_embs(torch.tensor(actions).cuda())
-                state = torch.cat((task_emb, enc_state, fb_embs), 1)
+                mb_embs = self.mb_embs(torch.tensor(actions).cuda())
+                state = torch.cat((task_emb, enc_state, mb_embs), 1)
 
             # Get router prediction
-            fb_probs, val_preds, att_weights = self.trans_router(
+            mb_probs, val_preds, att_weights = self.trans_router(
                 state, action_mask=actions_masks[:, i])
             
             
             # Iterate over choices in a batch
-            fb_choices = []
-            #bonus = torch.zeros_like(fb_probs)
+            mb_choices = []
+            #bonus = torch.zeros_like(mb_probs)
             bonus = (1 - actions_masks[:, i]) * 0.0
             for b_i in range(batch_size):
-                # Choose a fbs
+                # Choose a mbs
                 if argmax:
-                    fb_sample = fb_probs[b_i].argmax()
-                    fb_choice = int(fb_sample)#valid_fbs_batch[b_i][fb_sample]
+                    mb_sample = mb_probs[b_i].argmax()
+                    mb_choice = int(mb_sample)#valid_mbs_batch[b_i][mb_sample]
                 else:
-                    # Sample a fb
-                    #print("PREV PROB", fb_probs[b_i])
-                    #print("fb_probs[b_i]", fb_probs[b_i])
-                    sample_prob = (fb_probs[b_i] + bonus[b_i]) / (fb_probs[b_i] + bonus[b_i]).sum()
+                    # Sample a mb
+                    #print("PREV PROB", mb_probs[b_i])
+                    #print("mb_probs[b_i]", mb_probs[b_i])
+                    sample_prob = (mb_probs[b_i] + bonus[b_i]) / (mb_probs[b_i] + bonus[b_i]).sum()
                     #print("sample_prob", sample_prob)
                      
 
                     #print("sample_prob", sample_prob)
-                    fb_distr = Categorical(sample_prob)
-                    fb_sample = fb_distr.sample()
-                    fb_choice = int(fb_sample)#int(valid_fbs_batch[b_i][fb_sample])
-                    #imp_ratios[b_i, :i+1] *= fb_probs[b_i, fb_choice] / sample_prob[fb_choice]
+                    mb_distr = Categorical(sample_prob)
+                    mb_sample = mb_distr.sample()
+                    mb_choice = int(mb_sample)#int(valid_mbs_batch[b_i][mb_sample])
+                    #imp_ratios[b_i, :i+1] *= mb_probs[b_i, mb_choice] / sample_prob[mb_choice]
 
-                    #assert fb_probs[b_i, -1, fb_sample] != 0
+                    #assert mb_probs[b_i, -1, mb_sample] != 0
                 
-                # Each action needs to be associated with its index in the fb_probs
-                actions[b_i].append(fb_choice)
-                action_probs[b_i,i] = fb_probs[b_i]
-                fb_choices.append(fb_choice)
-                fb_count[fb_choice] += 1
+                # Each action needs to be associated with its index in the mb_probs
+                actions[b_i].append(mb_choice)
+                action_probs[b_i,i] = mb_probs[b_i]
+                mb_choices.append(mb_choice)
+                mb_count[mb_choice] += 1
                 # Set critic_outputs
                 critic_outputs[b_i,i] = val_preds[b_i]
-                # Remove the fb choice
-                if fb_choice != PASS_FB:
-                    fb_emb_indices[b_i].remove(fb_choice)
+                # Remove the mb choice
+                if mb_choice != PASS_FB:
+                    mb_emb_indices[b_i].remove(mb_choice)
 
-                    cur_fb = self.get_fb_fn(fb_choice)
+                    cur_mb = self.get_mb_fn(mb_choice)
 
                     # Verify the builder did not fail
-                    assert builders[b_i].attempt_add_fb(cur_fb, i)
+                    assert builders[b_i].attempt_add_mb(cur_mb, i)
             
 
 
@@ -380,47 +380,47 @@ class Router(nn.Module):
             actions_ep, 
             critic_outputs, 
             att_weights_list, 
-            valid_fbs_ep,
-            fb_count,
+            valid_mbs_ep,
+            mb_count,
             actions_masks,
             imp_ratios) 
 
 
-    def _get_valid_fbs(self, builder, fb_emb_indices, cur_depth, prev_actions):
-        # Update the valid fbs
-        valid_fbs = []
-        if (cur_depth, prev_actions) not in self._valid_fbs_dict:
-            for l_i in fb_emb_indices:
+    def _get_valid_mbs(self, builder, mb_emb_indices, cur_depth, prev_actions):
+        # Update the valid mbs
+        valid_mbs = []
+        if (cur_depth, prev_actions) not in self._valid_mbs_dict:
+            for l_i in mb_emb_indices:
                 if l_i == PASS_FB:
-                    fb_l_i = None
+                    mb_l_i = None
                 else:    
-                    fb_l_i = self.get_fb_fn(l_i)
+                    mb_l_i = self.get_mb_fn(l_i)
                 
-                if builder.is_valid_fb(fb_l_i, cur_depth):
-                    valid_fbs.append(l_i)
-            self._valid_fbs_dict[(cur_depth, prev_actions)] = valid_fbs
+                if builder.is_valid_mb(mb_l_i, cur_depth):
+                    valid_mbs.append(l_i)
+            self._valid_mbs_dict[(cur_depth, prev_actions)] = valid_mbs
         else:    
-            valid_fbs = self._valid_fbs_dict[(cur_depth, prev_actions)]
-        return valid_fbs
+            valid_mbs = self._valid_mbs_dict[(cur_depth, prev_actions)]
+        return valid_mbs
     
-    def fb_dropout(self, valid_fbs):
-        if len(valid_fbs) == 1:
-            # Require at least one fb
-            return valid_fbs
+    def mb_dropout(self, valid_mbs):
+        if len(valid_mbs) == 1:
+            # Require at least one mb
+            return valid_mbs
 
-        nondropped_fbs = []
-        for i in range(len(valid_fbs)):
+        nondropped_mbs = []
+        for i in range(len(valid_mbs)):
 
-            if random.random() >= self.args.fb_drop_rate:
-                nondropped_fbs.append(valid_fbs[i])
+            if random.random() >= self.args.mb_drop_rate:
+                nondropped_mbs.append(valid_mbs[i])
         
-        if len(nondropped_fbs) == 0:
-            # Add random fb if all the fbs were dropped
-            nondropped_fbs.append(random.choice(valid_fbs))
+        if len(nondropped_mbs) == 0:
+            # Add random mb if all the mbs were dropped
+            nondropped_mbs.append(random.choice(valid_mbs))
 
-        return nondropped_fbs
+        return nondropped_mbs
     
-    def predict_step(self, imgs, task_id, actions, fb_masks, action_masks):
+    def predict_step(self, imgs, task_id, actions, mb_masks, action_masks):
         """Get action and value for timestep."""
         batch_size = imgs.shape[0]
 
@@ -432,16 +432,16 @@ class Router(nn.Module):
 
         if len(actions) > 0:
             # Embeddings for the current FBs in model
-            fb_embs = self.fb_embs(actions)
-            state = torch.cat((task_emb, enc_state, fb_embs), 1)
+            mb_embs = self.mb_embs(actions)
+            state = torch.cat((task_emb, enc_state, mb_embs), 1)
         else:
             raise Exception("Require actions.")
         
         
 
-        fb_probs, val_preds, _ = self.trans_router(
-            state, fb_masks, action_masks)
-        return fb_probs, val_preds
+        mb_probs, val_preds, _ = self.trans_router(
+            state, mb_masks, action_masks)
+        return mb_probs, val_preds
             
                 
         

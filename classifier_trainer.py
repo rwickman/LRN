@@ -17,11 +17,11 @@ from block_trainer import BlockTrainer
 action_sets = {}
 
 class ClassifierTrainer(Trainer):
-    def __init__(self, args):
-        super().__init__(args)
+    def __init__(self, args, mb_model):
+        super().__init__(args, mb_model)
 
         self.load_data()
-        self._block_trainer = BlockTrainer(self.args, self._fb_model, self.fb_optim)
+        self._block_trainer = BlockTrainer(self.args, self._mb_model, self.mb_optim)
 
                 
     def train(self):
@@ -35,7 +35,7 @@ class ClassifierTrainer(Trainer):
             np.random.shuffle(self.train_data)
             for i in range(len(self.train_data)//self.args.batch_size):
                 
-                self._fb_count = torch.zeros(self._router.num_fbs + 1)
+                self._mb_count = torch.zeros(self._router.num_mbs + 1)
                 #tasks = #np.vstack(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0])
                 task_ids = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 0].astype(int)).cuda()
                 task_ids = task_ids.unsqueeze(1)
@@ -46,15 +46,11 @@ class ClassifierTrainer(Trainer):
                 target = torch.tensor(self.train_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2].astype(int), dtype=torch.int64).unsqueeze(1).cuda()
                 with torch.no_grad():
                     router_results = self._router(imgs, task_ids)
-                action_probs, actions, critic_outputs = router_results.action_probs, router_results.actions, router_results.critic_outputs
-                
-                # print("action_probs.shape", action_probs.shape)
 
-                # Add reward bonus
-                rewards = torch.zeros_like(actions[-1], dtype=torch.float64).cuda()
+                rewards = torch.zeros_like(router_results.actions[-1], dtype=torch.float64).cuda()
 
                 # Train the output model
-                _, output_losses = self._block_trainer.train(imgs, actions[-1], target)
+                _, output_losses = self._block_trainer.train(imgs, router_results.actions[-1], target)
 
 
                 # Reward based on model loss
@@ -64,7 +60,7 @@ class ClassifierTrainer(Trainer):
 
                 if i % 16 == 0:
                     #print("Output BCE Losses", output_losses)
-                    print("router_results.fb_count", router_results.fb_count)
+                    print("router_results.mb_count", router_results.mb_count)
                     print("\nEpoch:", epoch, "Iter:", i*self.args.batch_size, "\n")
                     # print("TOTAL ENP LOSS", total_enp_loss)
                     #print("CRITIC LOSS", total_critic_loss)
@@ -87,11 +83,11 @@ class ClassifierTrainer(Trainer):
                     print("rewards", rewards[:3])
 
 
-            test_f1_score, test_acc_score, action_entropy, num_unused_fbs = self.test_models()
+            test_f1_score, test_acc_score, action_entropy, num_unused_mbs = self.test_models()
             self.test_results["test_f1_scores"].append(test_f1_score)
             self.test_results["test_acc_scores"].append(test_acc_score)
             self.test_results["action_entropy"].append(action_entropy)
-            self.test_results["num_unused_fbs"].append(num_unused_fbs)
+            self.test_results["num_unused_mbs"].append(num_unused_mbs)
 
 
 
@@ -99,8 +95,8 @@ class ClassifierTrainer(Trainer):
 
             # Decrease learning rate
             self._lr_scheduler.step()
-            self._fb_lr_scheduler.step()
-            for param_group in self.fb_optim.param_groups:
+            self._mb_lr_scheduler.step()
+            for param_group in self.mb_optim.param_groups:
                 print(param_group["lr"])
             #print("self.optimizer.lr", self._optimizer.lr)
         for pair in sorted(list(action_sets.items()), key=lambda a: a[1]):
@@ -155,10 +151,10 @@ class ClassifierTrainer(Trainer):
 
     def test_models(self):
         self._router.eval()
-        self._fb_model.eval()
+        self._mb_model.eval()
         with torch.no_grad():
-            action_count = torch.zeros(self._router.num_fbs + 1, 1).cuda()
-            action_prob_sum = torch.zeros(self._router.num_fbs + 1, 1).cuda()
+            action_count = torch.zeros(self._router.num_mbs + 1, 1).cuda()
+            action_prob_sum = torch.zeros(self._router.num_mbs + 1, 1).cuda()
                 
             print("Testing models")
             #for k,v in self.args.constraints.items():
@@ -174,9 +170,9 @@ class ClassifierTrainer(Trainer):
                 targets = self.test_data[i*self.args.batch_size:(i+1)*self.args.batch_size, 2]
                 # print("task[0]", task[0], "targets[0]", targets[0])
                 y_trues[i*self.args.batch_size:(i+1)*self.args.batch_size] = targets
-                router_results = self._router(imgs, task_ids, argmax=True, should_drop_fbs=False)
+                router_results = self._router(imgs, task_ids, argmax=True, should_drop_mbs=False)
                 
-                pred = self._fb_model(imgs, router_results.actions[-1])
+                pred = self._mb_model(imgs, router_results.actions[-1])
 
                 if self.args.num_classes == 1:
                     pred = torch.sigmoid(pred)
@@ -192,7 +188,7 @@ class ClassifierTrainer(Trainer):
                     for b_i in range(task_ids.shape[0]):
                         # print("router_results.actions[-1, b_i, t]", router_results.actions[-1, b_i, t])
                         action_count[router_results.actions[-1, b_i, t]] += 1
-                        # for j, a_t in enumerate(router_results.valid_fbs_ep[b_i][t]):
+                        # for j, a_t in enumerate(router_results.valid_mbs_ep[b_i][t]):
                         #     action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * router_results.action_probs[b_i][t][j]
             
             if self.args.num_classes == 1:
@@ -208,11 +204,11 @@ class ClassifierTrainer(Trainer):
  
             action_prob = action_count / action_count.sum()
             action_entropy = float(entropy(action_prob.cpu())[0])
-            num_unused_fbs = int(len(action_count) - torch.count_nonzero(action_count))
-            print("NUM UNUSED FBS", num_unused_fbs)
+            num_unused_mbs = int(len(action_count) - torch.count_nonzero(action_count))
+            print("NUM UNUSED FBS", num_unused_mbs)
             print("ACTION ENTROPY", action_entropy)
             print("ACTION COUNT: ", action_count)
-            print("router_results.fb_count", router_results.fb_count)
+            print("router_results.mb_count", router_results.mb_count)
             print("router_results.actions[-1, :5]", router_results.actions[-1, :5], "\n")
             print("y_trues[0:5]", y_trues[0:5])
             print("task_ids[0:5]", task_ids[0:5].squeeze(0))
@@ -222,8 +218,8 @@ class ClassifierTrainer(Trainer):
             
         
         self._router.train()
-        self._fb_model.train()
-        return test_f1_score, test_acc_score, action_entropy, num_unused_fbs
+        self._mb_model.train()
+        return test_f1_score, test_acc_score, action_entropy, num_unused_mbs
 
     # def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions_one_hot):
     #     """PPO discreate loss function.

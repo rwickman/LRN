@@ -12,8 +12,8 @@ class RouterResult:
     actions: List[int]
     critic_outputs: List[torch.Tensor]
     att_weights: List[Dict[str, torch.Tensor]]
-    valid_fbs_ep: List[List[int]]
-    fb_count: torch.Tensor
+    valid_mbs_ep: List[List[int]]
+    mb_count: torch.Tensor
     action_masks: List[torch.Tensor]
     # Importance ratios for off-policy learning
     imp_ratios: torch.Tensor
@@ -145,70 +145,20 @@ def plot_attention_weights(state_labels, layer_ids, attention_heads):
     # plt.tight_layout()
     plt.show()
 
-def create_padding_mask(valid_fbs_batch):
-    masks = torch.zeros_like(valid_fbs_batch).cuda()
+def create_padding_mask(valid_mbs_batch):
+    masks = torch.zeros_like(valid_mbs_batch).cuda()
     batch_size = len(masks)
     # if len(masks[0]) > 1:
     #     return masks
     for i in range(len(masks)):
         mask_start = 1
-        for j in range(1, len(valid_fbs_batch[i])):
-            if valid_fbs_batch[i, j] == 0:
+        for j in range(1, len(valid_mbs_batch[i])):
+            if valid_mbs_batch[i, j] == 0:
                 break
             mask_start += 1
 
         masks[i, mask_start:] = 1
     return torch.reshape(masks, (masks.shape[0], 1, 1, masks.shape[1]))
-
-
-def window_and_pad(valid_fbs_ep, actions, action_probs, max_depth, num_fbs):
-    batch_size = len(valid_fbs_ep)
-    num_exs = batch_size * max_depth 
-
-    valid_fbs_ep_pad = torch.zeros(
-        (num_exs, num_fbs + 1),
-        dtype=torch.int64).cuda()
-    valid_fbs_ep_mask = torch.zeros(
-        (num_exs, num_fbs + 1),
-        dtype=torch.int64).cuda()
-    valid_fbs_count = torch.zeros(num_exs)
-
-    # Window the FBs chosen so far
-    actions_window =  torch.zeros(
-        (num_exs, max_depth),
-        dtype=torch.int64).cuda()
-    actions_mask = torch.zeros(
-        (num_exs, max_depth+2),
-        dtype=torch.int64).cuda()
-    
-    
-    # One-hot encoded actions
-    actions_one_hot = torch.zeros(
-        (num_exs, max_fbs),
-        dtype=torch.int64).cuda()
-    action_probs_pad = torch.zeros(
-        (num_exs, max_fbs),
-        dtype=torch.float64).cuda()
-
-    actions_batch = torch.zeros(num_exs, dtype=torch.int64).cuda()
-    actions = torch.tensor(actions)
-
-    fb_masks = torch.zeros(batch_size, max_depth, num_exs)
-
-    for i in range(batch_size):
-        for j in range(max_depth):
-            ex_i = i*max_depth + j
-            actions_mask[ex_i, j+3:] = 1 
-            actions_window[ex_i, :j+1] = actions[i][:j+1]
-            actions_batch[ex_i] = actions[i][j]
-            valid_fbs_ep_pad[ex_i, :len(valid_fbs_ep[i][j])] = torch.tensor(valid_fbs_ep[i][j])
-            valid_fbs_ep_mask[ex_i, :len(valid_fbs_ep[i][j])+1] = 1
-            valid_fbs_count[ex_i] = len(valid_fbs_ep[i][j])
-
-            actions_one_hot[ex_i, actions[ex_i]] = 1
-            action_probs_pad[ex_i, :action_probs[i][j].shape[0]] = action_probs[i][j]
-
-    return actions_mask, actions_window, valid_fbs_ep_pad, actions_one_hot, action_probs_pad, valid_fbs_count, actions_batch
 
 
 def create_lookahead_mask(size, batch_size, padding):
