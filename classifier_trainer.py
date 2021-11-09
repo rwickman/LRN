@@ -10,7 +10,7 @@ from scipy.stats import entropy
 
 from trainer import Trainer
 from router import Router
-from model_util import plot_attention_weights, window_and_pad, create_lookahead_mask
+from model_util import plot_attention_weights, create_lookahead_mask
 from data_loader import DataLoader
 from block_trainer import BlockTrainer
 
@@ -47,10 +47,10 @@ class ClassifierTrainer(Trainer):
                 with torch.no_grad():
                     router_results = self._router(imgs, task_ids)
 
-                rewards = torch.zeros_like(router_results.actions[-1], dtype=torch.float64).cuda()
+                rewards = torch.zeros_like(router_results.actions, dtype=torch.float64).cuda()
 
                 # Train the output model
-                _, output_losses = self._block_trainer.train(imgs, router_results.actions[-1], target)
+                _, output_losses = self._block_trainer.train(imgs, router_results.actions, target)
 
 
                 # Reward based on model loss
@@ -172,7 +172,7 @@ class ClassifierTrainer(Trainer):
                 y_trues[i*self.args.batch_size:(i+1)*self.args.batch_size] = targets
                 router_results = self._router(imgs, task_ids, argmax=True, should_drop_mbs=False)
                 
-                pred = self._mb_model(imgs, router_results.actions[-1])
+                pred = self._mb_model(imgs, router_results.actions)
 
                 if self.args.num_classes == 1:
                     pred = torch.sigmoid(pred)
@@ -187,7 +187,7 @@ class ClassifierTrainer(Trainer):
                 for t in range(self.args.max_depth):
                     for b_i in range(task_ids.shape[0]):
                         # print("router_results.actions[-1, b_i, t]", router_results.actions[-1, b_i, t])
-                        action_count[router_results.actions[-1, b_i, t]] += 1
+                        action_count[router_results.actions[b_i, t]] += 1
                         # for j, a_t in enumerate(router_results.valid_mbs_ep[b_i][t]):
                         #     action_prob_sum[a_t] += 1/(self.args.batch_size * self.args.max_depth) * router_results.action_probs[b_i][t][j]
             

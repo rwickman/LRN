@@ -12,6 +12,7 @@ from einops.layers.torch import Rearrange
 
 from model_util import *
 from model_builder import ModelBuilder
+from model_builders.rl_model_builder import RLModelBuilder
 
 
 class MultiHeadAttention(nn.Module):
@@ -238,9 +239,13 @@ class Router(nn.Module):
         super().__init__()
         self.args = args
         self.get_mb_fn = get_mb_fn
+        
+        
         self.num_mbs = num_mbs
+        if self.args.rl:
+            self.num_mbs = self.num_mbs - 1
         self.num_tasks = num_tasks
-        self._valid_mbs_dict = {}
+        # self._valid_mbs_dict = {}
 
         self.trans_router = TransformerRouter(self.args, self.num_mbs)
 
@@ -259,19 +264,19 @@ class Router(nn.Module):
     def forward(self, imgs, task_id, argmax=False, should_drop_mbs=True):
         batch_size = imgs.shape[0]
 
-        builders = [ModelBuilder(self.args) for _ in range(batch_size)]
+        if self.args.rl:
+            builders = [RLModelBuilder(self.args) for _ in range(batch_size)]
+        else:
+            builders = [ModelBuilder(self.args) for _ in range(batch_size)]
 
         mb_emb_indices = [list(range(self.num_mbs+1)) for _ in range(batch_size) ]
 
         critic_outputs = torch.zeros(batch_size, self.args.max_depth, 1).cuda()
-        # Store the state of the actions every timestep
-        actions_ep = torch.zeros(
-            self.args.max_depth, batch_size, self.args.max_depth, dtype=torch.int64).cuda()
         
+        # Store the state of the actions every timestep
         actions = [[] for _ in range(batch_size)]
 
         # mb_mask = torch.zeros(self.num_mbs+1).cuda()
-        failed = False
         cur_loss = None
         action_probs = torch.zeros(batch_size, self.args.max_depth, self.num_mbs+1).cuda()
         
@@ -285,9 +290,6 @@ class Router(nn.Module):
             batch_size,
             self.args.max_depth,
             self.num_mbs+1).cuda()
-
-        # Importance ratios
-        imp_ratios = torch.ones(batch_size, self.args.max_depth).cuda()
 
         # Build the model architecture 
         for i in range(self.args.max_depth):
@@ -331,7 +333,7 @@ class Router(nn.Module):
             # Iterate over choices in a batch
             mb_choices = []
             #bonus = torch.zeros_like(mb_probs)
-            bonus = (1 - actions_masks[:, i]) * 0.0
+            #bonus = (1 - actions_masks[:, i]) * 0.0
             for b_i in range(batch_size):
                 # Choose a mbs
                 if argmax:
@@ -339,18 +341,15 @@ class Router(nn.Module):
                     mb_choice = int(mb_sample)#valid_mbs_batch[b_i][mb_sample]
                 else:
                     # Sample a mb
-                    #print("PREV PROB", mb_probs[b_i])
-                    #print("mb_probs[b_i]", mb_probs[b_i])
-                    sample_prob = (mb_probs[b_i] + bonus[b_i]) / (mb_probs[b_i] + bonus[b_i]).sum()
+                    
+                    #sample_prob = (mb_probs[b_i] + bonus[b_i]) / (mb_probs[b_i] + bonus[b_i]).sum()
                     #print("sample_prob", sample_prob)
                      
 
                     #print("sample_prob", sample_prob)
-                    mb_distr = Categorical(sample_prob)
+                    mb_distr = Categorical(mb_probs[b_i])
                     mb_sample = mb_distr.sample()
                     mb_choice = int(mb_sample)#int(valid_mbs_batch[b_i][mb_sample])
-                    #imp_ratios[b_i, :i+1] *= mb_probs[b_i, mb_choice] / sample_prob[mb_choice]
-
                     #assert mb_probs[b_i, -1, mb_sample] != 0
                 
                 # Each action needs to be associated with its index in the mb_probs
@@ -360,36 +359,41 @@ class Router(nn.Module):
                 mb_count[mb_choice] += 1
                 # Set critic_outputs
                 critic_outputs[b_i,i] = val_preds[b_i]
+                
                 # Remove the mb choice
-                if mb_choice != PASS_FB:
+                if self.args.rl or mb_choice != PASS_FB:
                     mb_emb_indices[b_i].remove(mb_choice)
 
                     cur_mb = self.get_mb_fn(mb_choice)
 
                     # Verify the builder did not fail
-                    assert builders[b_i].attempt_add_mb(cur_mb, i)
+                    if self.args.rl:
+                        builders[b_i].attempt_add_mb(mb_choice)
+                    else:
+                        assert builders[b_i].attempt_add_mb(cur_mb, i)
             
 
 
-            # Add actions for this timestep
-            actions_ep[i, :, :i+1] = torch.tensor(actions)
-        imp_ratios = torch.clamp(imp_ratios, 0.01, 2.0)
+
+        # imp_ratios = torch.clamp(imp_ratios, 0.01, 2.0)
+        actions = torch.tensor(actions).cuda()
         return RouterResult(
-            failed, 
             action_probs, 
-            actions_ep, 
+            actions, 
             critic_outputs, 
             att_weights_list, 
             valid_mbs_ep,
             mb_count,
-            actions_masks,
-            imp_ratios) 
+            actions_masks) 
 
-
+    # TODO: Move this into model_builder.py
     def _get_valid_mbs(self, builder, mb_emb_indices, cur_depth, prev_actions):
-        # Update the valid mbs
-        valid_mbs = []
-        if (cur_depth, prev_actions) not in self._valid_mbs_dict:
+        if isinstance(builder, RLModelBuilder):
+            return builder.get_valid_mbs(cur_depth)
+        else:
+            # Update the valid mbs
+            valid_mbs = []
+            # if (cur_depth, prev_actions) not in self._valid_mbs_dict:
             for l_i in mb_emb_indices:
                 if l_i == PASS_FB:
                     mb_l_i = None
@@ -398,9 +402,10 @@ class Router(nn.Module):
                 
                 if builder.is_valid_mb(mb_l_i, cur_depth):
                     valid_mbs.append(l_i)
-            self._valid_mbs_dict[(cur_depth, prev_actions)] = valid_mbs
-        else:    
-            valid_mbs = self._valid_mbs_dict[(cur_depth, prev_actions)]
+            
+        #self._valid_mbs_dict[(cur_depth, prev_actions)] = valid_mbs
+        # else:    
+        #     valid_mbs = self._valid_mbs_dict[(cur_depth, prev_actions)]
         return valid_mbs
     
     def mb_dropout(self, valid_mbs):
