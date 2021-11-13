@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 
 @dataclass
 class RouterResult:
-    failed: bool
     action_probs: List[torch.Tensor]
     actions: List[int]
     critic_outputs: List[torch.Tensor]
@@ -15,8 +14,6 @@ class RouterResult:
     valid_mbs_ep: List[List[int]]
     mb_count: torch.Tensor
     action_masks: List[torch.Tensor]
-    # Importance ratios for off-policy learning
-    imp_ratios: torch.Tensor
 
 PASS_FB = 0
 

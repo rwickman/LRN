@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 from abc import ABC, abstractmethod
 import json, os
+from torch.distributions import Categorical
 
 from router import Router
 from model_util import PASS_FB, create_lookahead_mask
@@ -22,9 +23,9 @@ class Trainer(ABC):
         print("ROUTER PARAMS: ", sum(p.numel() for p in self._router.parameters()))
         print("FB MODEL PARAMS: ", sum(p.numel() for p in self._mb_model.parameters()))
         
-        self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr)
+        self.optimizer = optim.Adam(self._router.parameters(), lr=self.args.lr, eps=1e-4)
         self._lr_scheduler = optim.lr_scheduler.MultiplicativeLR(self.optimizer, lr_lambda=lambda e: self.args.lr_gamma)
-        self.mb_optim = optim.Adam(self._mb_model.parameters(), lr=self.args.mb_lr)
+        self.mb_optim = optim.Adam(self._mb_model.parameters(), lr=self.args.mb_lr, eps=1e-4)
         self._mb_lr_scheduler = optim.lr_scheduler.MultiplicativeLR(self.mb_optim, lr_lambda=lambda e: self.args.mb_lr_gamma)
         self.adv_avg = torch.zeros(self.args.max_depth).cuda()
         self.adv_std = torch.ones(self.args.max_depth).cuda()
@@ -54,29 +55,36 @@ class Trainer(ABC):
         pass
 
 
-    def compute_return(self, rewards, critic_outputs):
+    def compute_return(self, rewards, critic_outputs, dones=None):
         with torch.no_grad():
             returns = torch.zeros_like(rewards, dtype=torch.float32).cuda()
             advs = torch.zeros_like(rewards, dtype=torch.float32).cuda()
-            T = len(returns[0])
+            print("\nrewards.shape", rewards.shape, "\n")
+            T = returns.shape[1]
+            print("T", T)
             for t in reversed(range(T)):
+                
                 if t == T - 1:
                     returns[:, t] = rewards[:, t]
                     advs[:, t] = returns[:, t] -  critic_outputs[:, t, 0].detach()
                 else:
-                    returns[:, t] = rewards[:, t] + self.args.gamma * returns[:, t+1]
+                    # Determines if the current state is a terminal state
+                    cur_terminal = 1.0 - dones[t] if dones is not None else 1.0
+
+                    # Discounted return
+                    returns[:, t] = rewards[:, t] + self.args.gamma * returns[:, t+1] * cur_terminal
 
                     # TD Residual
-                    delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1, 0].detach() -  critic_outputs[:, t, 0].detach()
+                    delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1, 0].detach() * cur_terminal -  critic_outputs[:, t, 0].detach() 
                     
                     # GAE
-                    advs[:, t] = delta + self.args.gamma * self.args.gae_lam * advs[:, t+1]
+                    advs[:, t] = delta + self.args.gamma * self.args.gae_lam * advs[:, t+1] * cur_terminal
                     #advs[t] = returns[t] - critic_outputs[t].detach()
             
             tdlamret = advs + critic_outputs[:, :, 0].detach()
 
             # Standardize advantages
-            advs = (advs - advs.mean()) / advs.std()
+            advs = (advs - advs.mean()) / (advs.std() + 1e-6)
             return returns, advs, tdlamret
 
 
@@ -169,14 +177,15 @@ class Trainer(ABC):
         # print("mb_avgs.sum()", mb_avgs.sum())
         #print("mb_type_avgs", mb_type_avgs)
             # self._mb_count[a_i]
-        self._mb_count[PASS_FB] = 0
+        if not self.args.rl:
+            self._mb_count[PASS_FB] = 0
         for i in range(batch_size):
             for j in range(depth):
-                if actions[i][j] == PASS_FB:
+                if not self.args.rl and actions[i][j] == PASS_FB:
                     bonus[i][j] = 0
                 else:
                     #print("mb_type", mb_type, "mb_maxes[mb_type]", mb_maxes[mb_type], "dup_num", dup_num)
-                    bonus[i][j] += 1 - (self._mb_count[actions[i][j]] - mb_count_min) / (mb_count_max - mb_count_min)
+                    bonus[i][j] += 1 - (self._mb_count[actions[i][j]] - mb_count_min) / (mb_count_max - mb_count_min + 1e-6)
                 # if mb_avgs[actions[i][j]] > 1/self.args.num_dup_layers:
                 #     bonus[i][j] = -1
                 # else:
@@ -244,10 +253,11 @@ class Trainer(ABC):
         """Train the router on batches of experience."""
         critic_losses = []
         actor_losses = []
+        batch_size = len(imgs)
 
         if not self.args.no_reward_bonus:
             self._mb_count += router_results.mb_count
-            bonus = self.layer_reward_bonus(router_results.actions[-1])
+            bonus = self.layer_reward_bonus(router_results.actions)
             rewards += bonus * 0.1
         
 
@@ -259,25 +269,29 @@ class Trainer(ABC):
         # Create masks for decoder
         # TODO: Update this to change shape and need to change predict_step critic reshaping as well
         num_patches = (self.args.img_size**2) // self.args.patch_size**2
+        # class emb + task_emb + num_patches + max_depth
         max_inp = 2 + num_patches + self.args.max_depth
 
+
         # Create masks for modules
-        mb_masks = create_lookahead_mask(self.args.max_depth, self.args.batch_size, 2 + num_patches).cuda()
+        mb_masks = create_lookahead_mask(self.args.max_depth, batch_size, 2 + num_patches).cuda()
+        #print("mb_masks", mb_masks)
         
         # Reshape so you can treat each timestep as an example
-        actions_final = router_results.actions[-1].reshape(-1)
+        actions_final = router_results.actions.reshape(-1)
         action_masks = router_results.action_masks.view(-1, router_results.action_masks.shape[2])
-
-        # Create actions per timestep, and remove the last timestep actions as input
-        temp_actions = torch.roll(router_results.actions.clone(), 1, 0)
-        temp_actions[0] = 0
-        actions_inp = temp_actions.transpose(0,1).reshape(-1, router_results.actions.shape[0])
         
+        # Create actions per timestep, and remove the last timestep actions as input
+        actions_inp = torch.repeat_interleave(router_results.actions, (self.args.max_depth), axis=0)
+
         # Repeat images and tasks IDs for each timstep
         imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
         task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
-        num_exs = self.args.max_depth * self.args.batch_size
+        num_exs = task_ids_steps.shape[0]
+
         router_results.action_probs = router_results.action_probs.reshape(-1, router_results.action_probs.shape[-1])
+        router_results.critic_outputs = router_results.critic_outputs.reshape(-1)
+
         with torch.autograd.set_detect_anomaly(True):
             total_critic_loss = 0
             total_actor_loss = 0
@@ -288,8 +302,8 @@ class Trainer(ABC):
 
                 for m_i in range(self.args.nminibatches):
                     loss = torch.zeros(1).cuda()
-                    start = m_i * (self.args.batch_size // self.args.nminibatches)
-                    end = (m_i + 1) * (self.args.batch_size // self.args.nminibatches)
+                    start = m_i * (batch_size // self.args.nminibatches)
+                    end = (m_i + 1) * (batch_size // self.args.nminibatches)
                     m_batch_idxs = batch_ids[start:end]
                     # Get prediction for current timestep
                     new_prob, val_pred = self._router.predict_step(
@@ -305,7 +319,8 @@ class Trainer(ABC):
                         new_prob, 
                         tdlamret[m_batch_idxs], 
                         val_pred.view(-1),
-                        actions_final[m_batch_idxs].unsqueeze(1))
+                        actions_final[m_batch_idxs].unsqueeze(1),
+                        router_results.critic_outputs[m_batch_idxs])
 
 
                     total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
@@ -325,9 +340,11 @@ class Trainer(ABC):
                 actor_losses.append(total_actor_loss)
 
         
-        # print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
-        # print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
-        # print("critic_losses", critic_losses)
+        print("new_prob[:5]", new_prob[:5])
+        print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
+        print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
+        print("critic_losses", critic_losses)
+        
         return actor_losses, critic_losses
 
     def save(self):
@@ -381,7 +398,7 @@ class Trainer(ABC):
                 self._mb_count = torch.tensor(json.load(f))
 
 
-    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions):
+    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions, old_val_pred):
         """PPO discreate loss function.
         Args:
             advantage: advantage from the episode.
@@ -394,22 +411,29 @@ class Trainer(ABC):
         Returns:
             A tuple of PPO loss and value MSE loss 
         """
+        new_distr = Categorical(new_prob)
+        old_distr = Categorical(old_prob)
 
-        new_prob = new_prob.gather(1, actions).view(-1)
-        old_prob = old_prob.gather(1, actions).view(-1) 
+        # new_prob = new_prob.gather(1, actions).view(-1)
+        # old_prob = old_prob.gather(1, actions).view(-1) 
+        # # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
+        # ratio = new_prob / (old_prob.detach() + 1e-11)
+        new_prob = new_distr.log_prob(actions.squeeze())
+        old_prob = old_distr.log_prob(actions.squeeze())
 
-        # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
-        ratio = new_prob / (old_prob.detach() + 1e-11)
+        ratio = torch.exp(new_prob - old_prob)
+
         surrogate_1 = ratio * adv
         # Clipped policy gradient, ratio clipped between [0.8, 1.2]
         surrogate_2 = torch.clip(ratio, 1.0 - self.args.eps_clip, 1.0 + self.args.eps_clip) * adv
 
         # Entropy regularization
-        #entropy_pen = -ENTROPY_COEF * tf.reduce_sum(y_pred * tf.math.log(y_pred + 1e-10), axis=1)
-        entropy_pen = 0
+        entropy_pen = -self.args.entropy_lam * new_distr.entropy()
+        
         # PPO loss, averaged over several batches
         policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
-        #policy_loss = -(torch.log(new_prob) * adv).mean()
+        policy_loss = policy_loss + entropy_pen.mean()
+        # policy_loss = -(torch.log(new_prob) * adv).mean()
 
         # Value loss (MSE)
         #print("val_true", val_true[:5])
@@ -417,18 +441,17 @@ class Trainer(ABC):
         # val_true = val_true.unsqueeze(-1).unsqueeze(-1)
 
         #old_val_pred =old_val_pred.unsqueeze(-1)
-
-        #val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
+        val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
 
         # Unclipped value loss
-        #vf_losses1 = torch.square(val_true - val_pred)
+        vf_losses1 = torch.square(val_true - val_pred)
 
         # Clipped value loss
-        #vf_losses2 = torch.square(val_true - val_pred_clipped)
-        #vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
+        vf_losses2 = torch.square(val_true - val_pred_clipped)
+        vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
         #print("val_pred", val_pred, "val_true", val_true)
         
-        vf_loss = self.critic_loss_fn(val_pred, val_true)
+        #vf_loss = self.critic_loss_fn(val_pred, val_true)
         #vf_loss = self.critic_loss_fn(val_pred.view(val_pred.shape[0]), val_true)
         #print("policy_loss", policy_loss, "vf_loss", vf_loss)
         return  policy_loss, vf_loss
@@ -458,3 +481,16 @@ class Trainer(ABC):
                     total_smooth_loss += smooth_loss
         print("total_smooth_loss", total_smooth_loss)
         return total_smooth_loss / batch_size
+
+    def decay_lr(self):
+        if self.optimizer.param_groups[0]["lr"] > self.args.min_lr:
+            self._lr_scheduler.step()
+        else:
+            self.optimizer.param_groups[0]["lr"] = self.args.min_lr
+        
+        if self.mb_optim.param_groups[0]["lr"] > self.args.min_lr:
+            self._mb_lr_scheduler.step()
+        else:
+            self.mb_optim.param_groups[0]["lr"] = self.args.min_lr
+        
+        print("self.mb_optim.param_groups[0][lr]", self.mb_optim.param_groups[0]["lr"])

@@ -124,7 +124,7 @@ class Encoder(nn.Module):
         self.dropout = nn.Dropout(self.args.drop_rate)
 
         # Create learned positional encodings
-        num_patches = (self.args.img_size**2) // self.args.patch_size
+        num_patches = (self.args.img_size**2) // self.args.patch_size**2
         max_inp = 2 + num_patches + self.args.max_depth
         self.pos_enc = nn.Parameter(torch.randn(1, max_inp, self.args.hidden_size))
 

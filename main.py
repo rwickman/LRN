@@ -8,6 +8,8 @@ import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
 from mnist_benchmarks import run_mnist_benchmarks
 
+from envs.ale_env import ALEEnv
+from envs.cartpole_env import CartpoleEnv
 
 def main(args):
     # if self.args.metaworld:
@@ -28,8 +30,18 @@ def main(args):
     #     else:
     #         model_trainer = ClassifierTrainer(args) 
     #         model_trainer.train()
-    mb_model = ModuleBlockModel(args)
-    model_trainer = ClassifierTrainer(args, mb_model) 
+    if args.rl:
+        if args.env == "ale":
+            env = ALEEnv(args)
+        else:
+            env = CartpoleEnv(args)
+
+        mb_model = ModuleBlockModelRL(args)
+        model_trainer = ALETrainer(args, mb_model, env) 
+    else:
+        mb_model = ModuleBlockModel(args)
+        model_trainer = ClassifierTrainer(args, mb_model) 
+    
     model_trainer.train()
 
 if __name__ == "__main__":
@@ -58,6 +70,8 @@ if __name__ == "__main__":
         help="Latent size of the hidden state.")
     parser.add_argument("--lr", type=float, default=5e-4,
         help="Router learning rate.")
+    parser.add_argument("--min_lr", type=float, default=1e-6,
+        help="Minimum learning rate.")
     parser.add_argument("--lr_gamma", type=float, default=0.97,
         help="Router learning rate decay gamma.")
     parser.add_argument("--mb_lr", type=float, default=5e-4,
@@ -66,7 +80,14 @@ if __name__ == "__main__":
         help="Output modellearning rate decay gamma.")
     parser.add_argument("--patch_size", type=int, default=16,
         help="Patch size for ViT.")
-
+    parser.add_argument("--rl", action="store_true",
+        help="Run RL environment.")
+    parser.add_argument("--no_pass", action="store_true",
+        help="No PASS action.")
+    parser.add_argument("--env", default="cartpole",
+        help="Environment to create for RL modules.")
+    parser.add_argument("--num_env", type=int, default=4,
+        help="Number of environment to train over for RL.")
 
     parser.add_argument("--batch_size", type=int, default=128,
         help="Batch size.")
@@ -82,7 +103,7 @@ if __name__ == "__main__":
         help="Reward decay.")
     parser.add_argument("--gae_lam", type=float, default=0.95,
         help="GAE lambda.")
-    parser.add_argument("--entropy_lam", type=float, default=0.001,
+    parser.add_argument("--entropy_lam", type=float, default=0.01,
         help="Entropy lambda.")
     parser.add_argument("--critic_lam", type=float, default=0.5,
         help="Critic lambda.")
