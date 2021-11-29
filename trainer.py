@@ -14,7 +14,7 @@ class Trainer(ABC):
     def __init__(self, args, mb_model):
         self.args = args
         self._mb_model = mb_model.cuda()
-        
+        self.debug = False
         self._router = Router(
             self.args,
             self.args.num_tasks,
@@ -59,29 +59,27 @@ class Trainer(ABC):
         with torch.no_grad():
             returns = torch.zeros_like(rewards, dtype=torch.float32).cuda()
             advs = torch.zeros_like(rewards, dtype=torch.float32).cuda()
-            print("\nrewards.shape", rewards.shape, "\n")
             T = returns.shape[1]
-            print("T", T)
             for t in reversed(range(T)):
-                
                 if t == T - 1:
-                    returns[:, t] = rewards[:, t]
-                    advs[:, t] = returns[:, t] -  critic_outputs[:, t, 0].detach()
+                    cur_terminal = 1.0 - dones[:, t] if dones is not None else 0.0
+                    returns[:, t] = (1 - cur_terminal) * rewards[:, t] + cur_terminal * critic_outputs[:, t]
+                    advs[:, t] = returns[:, t] -  critic_outputs[:, t].detach()
                 else:
                     # Determines if the current state is a terminal state
-                    cur_terminal = 1.0 - dones[t] if dones is not None else 1.0
-
+                    cur_terminal = 1.0 - dones[:, t] if dones is not None else 1.0
+                    
                     # Discounted return
                     returns[:, t] = rewards[:, t] + self.args.gamma * returns[:, t+1] * cur_terminal
 
                     # TD Residual
-                    delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1, 0].detach() * cur_terminal -  critic_outputs[:, t, 0].detach() 
+                    delta = rewards[:, t] + self.args.gamma * critic_outputs[:, t+1].detach() * cur_terminal -  critic_outputs[:, t].detach() 
                     
                     # GAE
                     advs[:, t] = delta + self.args.gamma * self.args.gae_lam * advs[:, t+1] * cur_terminal
-                    #advs[t] = returns[t] - critic_outputs[t].detach()
+                    #advs[:, t] = returns[:. t] - critic_outputs[:, t].detach()
             
-            tdlamret = advs + critic_outputs[:, :, 0].detach()
+            tdlamret = advs + critic_outputs[:, :].detach()
 
             # Standardize advantages
             advs = (advs - advs.mean()) / (advs.std() + 1e-6)
@@ -110,66 +108,13 @@ class Trainer(ABC):
         #print("load_balance_loss", load_balance_loss)
         return load_balance_loss
 
-    # def layer_reward_bonus(self, actions, output_losses_batch):
-    #     import time
-    #     start_layer_time  = time.time()
-    #     batch_size = len(actions)
-    #     depth = len(actions[0])
-    #     bonus = torch.zeros((batch_size, depth)).cuda()
-    #     temp_mb_count = self._mb_count.clone()
-    #     temp_mb_count[PASS_FB] = 0
-    #     mb_count_max = temp_mb_count.max()
-    #     mb_count_min = temp_mb_count.min()
-        
-    #     # 1. Get counts for type
-    #     # 2. If not all equal:
-    #         # a. Give negative reward to one with most count
-    #         # b. Give positive reward to one with least count
-    #         # (Consider in future make this some sort of gradient)
-    #     # Iterate over actions, and assign the reward based on the mb_bonus
-    #     mb_bonus = torch.zeros(self._router.num_mbs)
-    #     mb_type_counts = torch.zeros(self._mb_model.num_mb_types, self.args.num_dup_layers)
-    #     for a_i in range(1, self._router.num_mbs+1):
-    #         mb_type = (a_i-1) % self._mb_model.num_mb_types
-    #         dup_num = (a_i-1)//self._mb_model.num_mb_types
-    #         #print(mb_type, dup_num, a_i)
-    #         mb_type_counts[mb_type, dup_num] = self._mb_count[a_i]
-        
-    #     #print("mb_type_counts", mb_type_counts)
-        
-    #     mb_maxes = mb_type_counts.argmax(axis=1)
-        
-    #     mb_type_sums = mb_type_counts.sum() #mb_type_counts.sum(axis=1).unsqueeze(1)
-    #     # print("mb_maxes", mb_maxes)
-    #     # print("mb_type_sums", mb_type_sums)
-    #     # print("mb_type_counts", mb_type_counts)
-    #     mb_type_avgs = mb_type_counts / mb_type_sums
-
-    #     #print("mb_type_avgs", mb_type_avgs)
-    #         # self._mb_count[a_i]
-        
-    #     for i in range(batch_size):
-    #         for j in range(depth):
-    #             if actions[i][j] == 0:
-    #                 bonus[i][j] = -1
-    #             mb_type = (actions[i][j]-1) % self._mb_model.num_mb_types
-    #             dup_num = (actions[i][j]-1)//self._mb_model.num_mb_types
-    #             #print("mb_type", mb_type, "mb_maxes[mb_type]", mb_maxes[mb_type], "dup_num", dup_num)
-    #             if mb_type_avgs[mb_type, dup_num] > 1/self.args.num_dup_layers:
-    #                 bonus[i][j] = -1#actions[i][j]
-    #             else:
-    #                 bonus[i][j] = 1
-        
-    #     return bonus
-
 
     def layer_reward_bonus(self, actions):
         # import time
         # start_layer_time  = time.time()
         batch_size = len(actions)
         depth = len(actions[0])
-        bonus = torch.zeros((batch_size, depth)).cuda()
-
+        bonus = torch.zeros_like(actions).cuda()
         #mb_avgs = self._mb_count / self._mb_count.sum()
         mb_count_min = self._mb_count.min()
         mb_count_max = self._mb_count.max()
@@ -177,88 +122,42 @@ class Trainer(ABC):
         # print("mb_avgs.sum()", mb_avgs.sum())
         #print("mb_type_avgs", mb_type_avgs)
             # self._mb_count[a_i]
+
+        bonus_factor = 1 - (len(self._mb_count) - self._mb_count.count_nonzero())/len(self._mb_count)
+        #print("self._mb_count", self._mb_count)
+        #print("bonus_factor", bonus_factor)
         if not self.args.rl:
             self._mb_count[PASS_FB] = 0
-        for i in range(batch_size):
-            for j in range(depth):
-                if not self.args.rl and actions[i][j] == PASS_FB:
-                    bonus[i][j] = 0
-                else:
-                    #print("mb_type", mb_type, "mb_maxes[mb_type]", mb_maxes[mb_type], "dup_num", dup_num)
-                    bonus[i][j] += 1 - (self._mb_count[actions[i][j]] - mb_count_min) / (mb_count_max - mb_count_min + 1e-6)
+        # print("bonus_factor", bonus_factor)
+        bonus = bonus_factor  - (self._mb_count[actions].cuda() - mb_count_min) / (mb_count_max - mb_count_min + 1e-6).cuda()
+        bonus = bonus * 0.1
+
+        # for i in range(batch_size):
+        #     for j in range(depth):
+        #         if not self.args.rl and actions[i][j] == PASS_FB:
+        #             bonus[i][j] = 0
+        #         else:
+        #             #print("mb_type", mb_type, "mb_maxes[mb_type]", mb_maxes[mb_type], "dup_num", dup_num)
+        #             bonus[i][j] += 1 - (self._mb_count[actions[i][j]] - mb_count_min) / (mb_count_max - mb_count_min + 1e-6)
                 # if mb_avgs[actions[i][j]] > 1/self.args.num_dup_layers:
                 #     bonus[i][j] = -1
                 # else:
                 #     bonus[i][j] = 1
         #print("BONUS TIME", time.time() - start_layer_time)
+        
+        #print("bonus", bonus)
         return bonus
 
 
-    # def layer_reward_bonus(self, actions, output_losses_batch):
-    #     batch_size = len(actions)
-    #     depth = len(actions[0])
-    #     bonus = torch.zeros((batch_size, depth)).cuda()
-    #     temp_mb_count = self._mb_count.clone()
-    #     temp_mb_count[PASS_FB] = 0
-    #     mb_count_max = temp_mb_count.max()
-    #     mb_count_min = temp_mb_count.min()
-        
-    #     # Will need to calculate two things:
-    #     # 1. (num times used / # eps) for each action
-    #         # a. ANS: mb_count / batch_Size
-    #     # 2. P(not used at all)
-    #         # a. How to know if a layer 
-
-    #     for i in range(batch_size):
-    #         for j in range(depth):
-    #             if actions[i][j] != PASS_FB:
-    #                 mb_type = self._mb_model.action_to_mb_type(actions[i][j])
-    #                 # Get the probability that equals the uniform sampling of this FB 
-    #                 uni_mb_prob = self._mb_model.get_mb_prob(mb_type)
-    #                 cur_mb_prob = self._mb_count[actions[i][j]] / batch_size
-    #                 log_loss = -(uni_mb_prob * torch.log(cur_mb_prob + 1e-5) + (1-uni_mb_prob) * torch.log((1-cur_mb_prob) + 1e-5) )
-    #                 prob_diff = (uni_mb_prob - cur_mb_prob)
-    #                 if abs(prob_diff) <= 0.05:
-    #                     bonus[i][j] += 1
-    #                 elif prob_diff < 0:
-    #                     bonus[i][j] += -log_loss
-    #                 else:
-    #                     bonus[i][j] += 1 - log_loss
-
-
-    #                 #log_loss = -(uni_mb_prob * torch.log(cur_mb_prob + 1e-5) + (1-uni_mb_prob) * torch.log((1-cur_mb_prob) + 1e-5) )
-    #                 #bonus[i][j] += -log_loss#bonus[i][j]
-    #             else:
-    #                 bonus[i][j] += -5
-    #                 # prob_diff = (uni_mb_prob - cur_mb_prob)**
-    #                 # if abs(prob_diff) < 0.1:
-    #                 #     bonus[i][j] += 5
-    #                 # else:     
-    #                 #     bonus[i][j] += -5
-                    
-    #             #         if cur_mb_prob < uni_mb_prob:
-                        
-    #             # else:
-    #             #     bonus[i][j] += -5
-    #                 # if cur_mb_prob <= uni_mb_prob:
-    #                 #     bonus[i][j] += (1 - (uni_mb_prob - cur_mb_prob)) * 5
-    #                 # else:
-    #                 #      bonus[i][j] += (uni_mb_prob - cur_mb_prob) * 5
-    #             #bonus[i][j] = avg_reward[actions[i][j]]
-    #             #bonus[i][j] += 1 - self._mb_count[actions[i][j]]  / self._mb_count.sum()   
-    #     #bonus = -(avg_reward.max()  - avg_reward / avg_reward.sum())
-    #     return bonus
-
-    def train_router(self, imgs, task_ids, rewards, router_results):
+    def train_router(self, imgs, task_ids, rewards, router_results, hidden_states=None):
         """Train the router on batches of experience."""
         critic_losses = []
         actor_losses = []
         batch_size = len(imgs)
-
+        self._mb_count = router_results.mb_count
         if not self.args.no_reward_bonus:
-            self._mb_count += router_results.mb_count
             bonus = self.layer_reward_bonus(router_results.actions)
-            rewards += bonus * 0.1
+            rewards += bonus
         
 
         returns, advs, tdlamret = self.compute_return(rewards, router_results.critic_outputs)
@@ -266,66 +165,88 @@ class Trainer(ABC):
         tdlamret = tdlamret.reshape(-1)
         returns = returns.reshape(-1)
 
-        # Create masks for decoder
         # TODO: Update this to change shape and need to change predict_step critic reshaping as well
         num_patches = (self.args.img_size**2) // self.args.patch_size**2
-        # class emb + task_emb + num_patches + max_depth
-        max_inp = 2 + num_patches + self.args.max_depth
-
-
-        # Create masks for modules
-        mb_masks = create_lookahead_mask(self.args.max_depth, batch_size, 2 + num_patches).cuda()
-        #print("mb_masks", mb_masks)
         
+        if self.args.rl:
+            # class emb + task_emb + hidden_state + num_patches + max_depth
+            #max_inp = 3 + num_patches
+            max_inp = 4
+        else:
+            # class emb + task_emb + num_patches + max_depth
+            max_inp = 2 + num_patches 
+
+        # Create lookhead masks for module predictions to mask out future timesteps
+        mb_masks = create_lookahead_mask(self.args.max_depth, batch_size, max_inp).cuda()
+
         # Reshape so you can treat each timestep as an example
         actions_final = router_results.actions.reshape(-1)
         action_masks = router_results.action_masks.view(-1, router_results.action_masks.shape[2])
-        
+
         # Create actions per timestep, and remove the last timestep actions as input
         actions_inp = torch.repeat_interleave(router_results.actions, (self.args.max_depth), axis=0)
 
         # Repeat images and tasks IDs for each timstep
         imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
         task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
+        print("task_ids_steps.shape", task_ids_steps.shape, task_ids_steps.dtype)
+        if hidden_states is not None:
+            hidden_states = torch.repeat_interleave(hidden_states, (self.args.max_depth), axis=0)
+
         num_exs = task_ids_steps.shape[0]
+
 
         router_results.action_probs = router_results.action_probs.reshape(-1, router_results.action_probs.shape[-1])
         router_results.critic_outputs = router_results.critic_outputs.reshape(-1)
 
         with torch.autograd.set_detect_anomaly(True):
-            total_critic_loss = 0
-            total_actor_loss = 0
+
             # TODO: Use a DataLoader for this
+            #print("num_exs", num_exs)
+            #print("batch_size", batch_size)
             for e_i in range(self.args.noptepochs):
+
                 batch_ids = torch.randperm(num_exs)
                 loss = torch.zeros(1).cuda()
 
                 for m_i in range(self.args.nminibatches):
                     loss = torch.zeros(1).cuda()
-                    start = m_i * (batch_size // self.args.nminibatches)
-                    end = (m_i + 1) * (batch_size // self.args.nminibatches)
+                    start = m_i * (num_exs // self.args.nminibatches)
+                    end = (m_i + 1) * (num_exs // self.args.nminibatches)
                     m_batch_idxs = batch_ids[start:end]
+             
                     # Get prediction for current timestep
+                    if self.args.rl:
+                        cur_hidden = hidden_states[m_batch_idxs]
+                    else:
+                        cur_hidden = None
+                    
                     new_prob, val_pred = self._router.predict_step(
                         imgs_batch_steps[m_batch_idxs],
                         task_ids_steps[m_batch_idxs],
                         actions_inp[m_batch_idxs],
                         mb_masks[m_batch_idxs],
-                        action_masks[m_batch_idxs])
-
-                    actor_loss, critic_loss = self.ppo_loss(
+                        action_masks[m_batch_idxs],
+                        cur_hidden)
+                    
+                    actor_loss, critic_loss, should_stop = self.ppo_loss(
                         advs[m_batch_idxs], 
                         router_results.action_probs[m_batch_idxs], 
                         new_prob, 
-                        tdlamret[m_batch_idxs], 
+                        returns[m_batch_idxs], 
                         val_pred.view(-1),
                         actions_final[m_batch_idxs].unsqueeze(1),
                         router_results.critic_outputs[m_batch_idxs])
 
+                    if should_stop:
+                        print("\nnew_prob[:5]", new_prob[:5])
+                        #print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:5].detach().cpu().numpy())
+                        print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
+                        print("Critic Outputs", val_pred[:50].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:50].detach().cpu().numpy())
+                        print("critic_losses", critic_losses)
 
-                    total_critic_loss += self.args.critic_lam * critic_loss.detach().cpu().numpy()
-                    
-                    total_actor_loss += actor_loss.detach().cpu().numpy()
+                        print("self._mb_count", self._mb_count)
+                        return actor_losses, critic_losses
                     
                     loss += actor_loss + self.args.critic_lam * critic_loss                        
 
@@ -336,15 +257,17 @@ class Trainer(ABC):
                     self.optimizer.zero_grad()
 
 
-                critic_losses.append(total_critic_loss)
-                actor_losses.append(total_actor_loss)
+                    critic_losses.append(self.args.critic_lam * critic_loss.detach().cpu().numpy())
+                    actor_losses.append(actor_loss.detach().cpu().numpy())
 
-        
-        print("new_prob[:5]", new_prob[:5])
-        print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
-        print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
-        print("critic_losses", critic_losses)
-        
+        if self.debug:
+            print("new_prob[:5]", new_prob[:5])
+            #print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
+            print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
+            print("Critic Outputs", val_pred[:50].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:50].detach().cpu().numpy())
+            print("critic_losses", critic_losses)
+            print("self._mb_count", self._mb_count)
+    
         return actor_losses, critic_losses
 
     def save(self):
@@ -398,7 +321,7 @@ class Trainer(ABC):
                 self._mb_count = torch.tensor(json.load(f))
 
 
-    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions, old_val_pred):
+    def ppo_loss(self, adv, old_prob, new_prob, val_true, val_pred, actions, old_val_pred, return_step_loss=False):
         """PPO discreate loss function.
         Args:
             advantage: advantage from the episode.
@@ -418,8 +341,17 @@ class Trainer(ABC):
         # old_prob = old_prob.gather(1, actions).view(-1) 
         # # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
         # ratio = new_prob / (old_prob.detach() + 1e-11)
+        #print("actions", actions.squeeze())
         new_prob = new_distr.log_prob(actions.squeeze())
         old_prob = old_distr.log_prob(actions.squeeze())
+        # print("\nnew_prob", new_prob)
+        # print("old_prob", old_prob)
+        # print("new_prob == old_prob", new_prob == old_prob)
+        # print("val_pred", val_pred)
+        # print("old_val_pred", old_val_pred)
+        # print("val_pred == old_val_pred", val_true == old_val_pred)
+        # print("val_pred - old_val_pred", val_pred - old_val_pred)
+
 
         ratio = torch.exp(new_prob - old_prob)
 
@@ -441,20 +373,36 @@ class Trainer(ABC):
         # val_true = val_true.unsqueeze(-1).unsqueeze(-1)
 
         #old_val_pred =old_val_pred.unsqueeze(-1)
-        val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
+        #val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
 
         # Unclipped value loss
-        vf_losses1 = torch.square(val_true - val_pred)
+        #vf_losses1 = torch.square(val_true - val_pred)
 
         # Clipped value loss
-        vf_losses2 = torch.square(val_true - val_pred_clipped)
-        vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
+        #vf_losses2 = torch.square(val_true - val_pred_clipped)
+        #vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
+        
+        vf_loss = self.critic_loss_fn(val_pred, val_true)
+
+        # Get apporximate KL between new and old policies
+        approx_kl = (old_prob.detach() - new_prob.detach()).mean().item()
+        if self.debug:
+            print("approx_kl", approx_kl)
+        #print("1.5 * self.args.tgt_kl", 1.5 * self.args.tgt_kl)
+        should_stop = approx_kl > self.args.tgt_kl
+
+
+
+        if return_step_loss:
+            critic_step_loss = (val_true - val_pred).detach() ** 2
+            return policy_loss, vf_loss, critic_step_loss, should_stop
+
         #print("val_pred", val_pred, "val_true", val_true)
         
-        #vf_loss = self.critic_loss_fn(val_pred, val_true)
+        
         #vf_loss = self.critic_loss_fn(val_pred.view(val_pred.shape[0]), val_true)
         #print("policy_loss", policy_loss, "vf_loss", vf_loss)
-        return  policy_loss, vf_loss
+        return  policy_loss, vf_loss, should_stop
 
 
     def label_smooth_loss(self, action_indices, new_prob, valid_mbs_count, actions_one_hot, m_batch_idxs):
@@ -488,9 +436,9 @@ class Trainer(ABC):
         else:
             self.optimizer.param_groups[0]["lr"] = self.args.min_lr
         
-        if self.mb_optim.param_groups[0]["lr"] > self.args.min_lr:
+        if self.mb_optim.param_groups[0]["lr"] > self.args.mb_min_lr:
             self._mb_lr_scheduler.step()
         else:
-            self.mb_optim.param_groups[0]["lr"] = self.args.min_lr
+            self.mb_optim.param_groups[0]["lr"] = self.args.mb_min_lr
         
         print("self.mb_optim.param_groups[0][lr]", self.mb_optim.param_groups[0]["lr"])

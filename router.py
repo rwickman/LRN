@@ -125,7 +125,12 @@ class Encoder(nn.Module):
 
         # Create learned positional encodings
         num_patches = (self.args.img_size**2) // self.args.patch_size**2
-        max_inp = 2 + num_patches + self.args.max_depth
+        if self.args.rl:
+            # class emb + task_emb + hidden_state + num_patches + max_depth
+            max_inp = 4 + self.args.max_depth
+        else:
+            # class emb + task_emb + num_patches + max_depth
+            max_inp = 2 + num_patches + self.args.max_depth
         self.pos_enc = nn.Parameter(torch.randn(1, max_inp, self.args.hidden_size))
 
 
@@ -134,7 +139,7 @@ class Encoder(nn.Module):
             x: task emb, example emb, used mbs embs
         """
         x = x * torch.sqrt(torch.tensor(self.args.hidden_size, dtype=torch.float32)).cuda()
-        x += self.pos_enc[:, :x.shape[1], :]
+        x = x + self.pos_enc[:, :x.shape[1], :]
         x = self.dropout(x)
 
         # Run through all encoder mb
@@ -221,10 +226,10 @@ class ImgEncoder(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        patch_dim = self.args.patch_size ** 2 * self.args.in_channels
+        self.patch_dim = self.args.patch_size ** 2 * self.args.in_channels
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = self.args.patch_size, p2 = self.args.patch_size),
-            nn.Linear(patch_dim, self.args.hidden_size),
+            nn.Linear(self.patch_dim, self.args.hidden_size),
         )
 
     def forward(self, imgs):
@@ -232,7 +237,18 @@ class ImgEncoder(nn.Module):
         patches = self.to_patch_embedding(imgs)
         return patches
 
-        
+class ALEStateEncoder(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.fc_1 = nn.Linear(self.args.in_channels, self.args.hidden_size)
+        self.act_1 = nn.GELU()
+        self.fc_2 = nn.Linear(self.args.hidden_size, self.args.hidden_size)
+    
+    def forward(self, x):
+        x = self.act_1(self.fc_1(x))
+        x = self.fc_2(x)
+        return x
 
 class Router(nn.Module):
     def __init__(self, args, num_tasks, get_mb_fn, num_mbs):
@@ -255,13 +271,15 @@ class Router(nn.Module):
         
         if self.args.metaworld:
             self.state_encoder = MuJoCoEncoder(self.args)
+        elif self.args.rl:
+            self.state_encoder = ALEStateEncoder(self.args)
         else:
             self.state_encoder = ImgEncoder(self.args)
                 
         # self.critic = Critic(self.args)
 
 
-    def forward(self, imgs, task_id, argmax=False, should_drop_mbs=True):
+    def forward(self, imgs, task_id, hidden_state=None, argmax=False, should_drop_mbs=True):
         batch_size = imgs.shape[0]
 
         if self.args.rl:
@@ -271,7 +289,7 @@ class Router(nn.Module):
 
         mb_emb_indices = [list(range(self.num_mbs+1)) for _ in range(batch_size) ]
 
-        critic_outputs = torch.zeros(batch_size, self.args.max_depth, 1).cuda()
+        critic_outputs = torch.zeros(batch_size, self.args.max_depth).cuda()
         
         # Store the state of the actions every timestep
         actions = [[] for _ in range(batch_size)]
@@ -283,7 +301,7 @@ class Router(nn.Module):
         att_weights_list = [[] for _ in range(batch_size)]
         valid_mbs_ep = [[] for _ in range(batch_size)]
         
-        mb_count = torch.zeros(self.num_mbs  + 1)
+        mb_count = torch.zeros(self.num_mbs  + 1).cuda()
 
         # Mask used for invalid actions
         actions_masks = torch.ones(
@@ -319,11 +337,18 @@ class Router(nn.Module):
             task_emb = self.task_embs(task_id)
             
             # Get the embeddings for the model currently getting constructed
-            if i == 0:
-                state = torch.cat((task_emb, enc_state), 1)                
+            if hidden_state is not None:
+                if i == 0:
+                    state = torch.cat((task_emb, enc_state, hidden_state), 1)                
+                else:
+                    mb_embs = self.mb_embs(torch.tensor(actions).cuda())
+                    state = torch.cat((task_emb, enc_state, hidden_state, mb_embs), 1)
             else:
-                mb_embs = self.mb_embs(torch.tensor(actions).cuda())
-                state = torch.cat((task_emb, enc_state, mb_embs), 1)
+                if i == 0:
+                    state = torch.cat((task_emb, enc_state), 1)                
+                else:
+                    mb_embs = self.mb_embs(torch.tensor(actions).cuda())
+                    state = torch.cat((task_emb, enc_state, mb_embs), 1)
 
             # Get router prediction
             mb_probs, val_preds, att_weights = self.trans_router(
@@ -425,7 +450,7 @@ class Router(nn.Module):
 
         return nondropped_mbs
     
-    def predict_step(self, imgs, task_id, actions, mb_masks, action_masks):
+    def predict_step(self, imgs, task_id, actions, mb_masks, action_masks, hidden_state=None):
         """Get action and value for timestep."""
         batch_size = imgs.shape[0]
 
@@ -438,7 +463,10 @@ class Router(nn.Module):
         if len(actions) > 0:
             # Embeddings for the current FBs in model
             mb_embs = self.mb_embs(actions)
-            state = torch.cat((task_emb, enc_state, mb_embs), 1)
+            if hidden_state is not None:
+                state = torch.cat((task_emb, enc_state, hidden_state, mb_embs), 1)
+            else:
+                state = torch.cat((task_emb, enc_state, mb_embs), 1)
         else:
             raise Exception("Require actions.")
         

@@ -3,6 +3,8 @@ from classifier_trainer import ClassifierTrainer
 from ale_trainer import ALETrainer
 from modules.mb_model import ModuleBlockModel
 from modules.mb_model_rl import ModuleBlockModelRL
+# from modules.mb_model_rl_vit import ModuleBlockModelRLViT
+
 #from rl_trainer import RLTrainer
 import os, sys
 sys.path.append(os.path.abspath("benchmarks"))
@@ -31,13 +33,14 @@ def main(args):
     #         model_trainer = ClassifierTrainer(args) 
     #         model_trainer.train()
     if args.rl:
-        if args.env == "ale":
-            env = ALEEnv(args)
-        else:
-            env = CartpoleEnv(args)
+        # if args.env == "ale":
+        #     env = ALEEnv(args)
+        # else:
+        #     env = CartpoleEnv(args)
 
         mb_model = ModuleBlockModelRL(args)
-        model_trainer = ALETrainer(args, mb_model, env) 
+        #mb_model = ModuleBlockModelRLViT(args)
+        model_trainer = ALETrainer(args, mb_model) 
     else:
         mb_model = ModuleBlockModel(args)
         model_trainer = ClassifierTrainer(args, mb_model) 
@@ -62,7 +65,7 @@ if __name__ == "__main__":
         help="Latent size of the layer embeddings.")
     parser.add_argument("--task_emb_size", type=int, default=256,
         help="Latent size of the task embeddings.")
-    parser.add_argument("--dff", type=int, default=512,
+    parser.add_argument("--dff", type=int, default=1024,
         help="Latent size of the hidden state.")
     parser.add_argument("--hidden_size", type=int, default=256,
         help="Latent size of the hidden state.")
@@ -70,7 +73,9 @@ if __name__ == "__main__":
         help="Latent size of the hidden state.")
     parser.add_argument("--lr", type=float, default=5e-4,
         help="Router learning rate.")
-    parser.add_argument("--min_lr", type=float, default=1e-6,
+    parser.add_argument("--min_lr", type=float, default=1e-4,
+        help="Minimum learning rate.")
+    parser.add_argument("--mb_min_lr", type=float, default=1e-4,
         help="Minimum learning rate.")
     parser.add_argument("--lr_gamma", type=float, default=0.97,
         help="Router learning rate decay gamma.")
@@ -88,6 +93,10 @@ if __name__ == "__main__":
         help="Environment to create for RL modules.")
     parser.add_argument("--num_env", type=int, default=4,
         help="Number of environment to train over for RL.")
+    parser.add_argument("--seq_len", type=int, default=8,
+        help="Sequence length for training RL.")
+    parser.add_argument("--tgt_kl", type=float, default=0.01,
+        help="Sequence length for training RL.")
 
     parser.add_argument("--batch_size", type=int, default=128,
         help="Batch size.")
@@ -99,11 +108,11 @@ if __name__ == "__main__":
         help="Number of duplicate layers .")
     parser.add_argument("--num_classes", type=int, default=1,
         help="Number classes of output.")
-    parser.add_argument("--gamma", type=float, default=0.99,
+    parser.add_argument("--gamma", type=float, default=0.999,
         help="Reward decay.")
     parser.add_argument("--gae_lam", type=float, default=0.95,
         help="GAE lambda.")
-    parser.add_argument("--entropy_lam", type=float, default=0.01,
+    parser.add_argument("--entropy_lam", type=float, default=0.001,
         help="Entropy lambda.")
     parser.add_argument("--critic_lam", type=float, default=0.5,
         help="Critic lambda.")
@@ -150,7 +159,7 @@ if __name__ == "__main__":
         help="Epsilon clipping used for PPO.")
     parser.add_argument("--val_clip", type=float, default=0.2,
         help="Value clipping used for PPO.")
-    parser.add_argument("--noptepochs", type=int, default=1,
+    parser.add_argument("--noptepochs", type=int, default=2,
         help="Number of epochs to train batch of episodes")
     parser.add_argument("--nminibatches", type=int, default=2,
         help="Number of minibatches to split the batch of episdoes")
