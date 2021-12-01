@@ -149,7 +149,7 @@ class Trainer(ABC):
         return bonus
 
 
-    def train_router(self, imgs, task_ids, rewards, router_results, hidden_states=None):
+    def train_router(self, imgs, task_ids, rewards, router_results):
         """Train the router on batches of experience."""
         critic_losses = []
         actor_losses = []
@@ -169,9 +169,9 @@ class Trainer(ABC):
         num_patches = (self.args.img_size**2) // self.args.patch_size**2
         
         if self.args.rl:
-            # class emb + task_emb + hidden_state + num_patches + max_depth
+            # pred emb + task_emb + state emb + max_depth
             #max_inp = 3 + num_patches
-            max_inp = 4
+            max_inp = 3
         else:
             # class emb + task_emb + num_patches + max_depth
             max_inp = 2 + num_patches 
@@ -189,9 +189,6 @@ class Trainer(ABC):
         # Repeat images and tasks IDs for each timstep
         imgs_batch_steps = torch.repeat_interleave(imgs, (self.args.max_depth), axis=0)
         task_ids_steps = torch.repeat_interleave(task_ids, (self.args.max_depth), axis=0)
-        print("task_ids_steps.shape", task_ids_steps.shape, task_ids_steps.dtype)
-        if hidden_states is not None:
-            hidden_states = torch.repeat_interleave(hidden_states, (self.args.max_depth), axis=0)
 
         num_exs = task_ids_steps.shape[0]
 
@@ -207,27 +204,19 @@ class Trainer(ABC):
             for e_i in range(self.args.noptepochs):
 
                 batch_ids = torch.randperm(num_exs)
-                loss = torch.zeros(1).cuda()
-
                 for m_i in range(self.args.nminibatches):
-                    loss = torch.zeros(1).cuda()
                     start = m_i * (num_exs // self.args.nminibatches)
                     end = (m_i + 1) * (num_exs // self.args.nminibatches)
                     m_batch_idxs = batch_ids[start:end]
              
                     # Get prediction for current timestep
-                    if self.args.rl:
-                        cur_hidden = hidden_states[m_batch_idxs]
-                    else:
-                        cur_hidden = None
                     
                     new_prob, val_pred = self._router.predict_step(
                         imgs_batch_steps[m_batch_idxs],
                         task_ids_steps[m_batch_idxs],
                         actions_inp[m_batch_idxs],
                         mb_masks[m_batch_idxs],
-                        action_masks[m_batch_idxs],
-                        cur_hidden)
+                        action_masks[m_batch_idxs])
                     
                     actor_loss, critic_loss, should_stop = self.ppo_loss(
                         advs[m_batch_idxs], 
@@ -240,6 +229,7 @@ class Trainer(ABC):
 
                     if should_stop:
                         print("\nnew_prob[:5]", new_prob[:5])
+                        print("task_ids_steps[m_batch_idxs][:5]", task_ids_steps[m_batch_idxs][:5])
                         #print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:5].detach().cpu().numpy())
                         print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
                         print("Critic Outputs", val_pred[:50].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:50].detach().cpu().numpy())
@@ -248,7 +238,7 @@ class Trainer(ABC):
                         print("self._mb_count", self._mb_count)
                         return actor_losses, critic_losses
                     
-                    loss += actor_loss + self.args.critic_lam * critic_loss                        
+                    loss = actor_loss + self.args.critic_lam * critic_loss                        
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self._router.parameters(), self.args.max_grad_norm)
@@ -262,6 +252,7 @@ class Trainer(ABC):
 
         if self.debug:
             print("new_prob[:5]", new_prob[:5])
+            print("task_ids_steps[m_batch_idxs][:5]", task_ids_steps[m_batch_idxs][:5])
             #print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
             print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
             print("Critic Outputs", val_pred[:50].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:50].detach().cpu().numpy())
@@ -334,36 +325,27 @@ class Trainer(ABC):
         Returns:
             A tuple of PPO loss and value MSE loss 
         """
+        
         new_distr = Categorical(new_prob)
         old_distr = Categorical(old_prob)
 
-        # new_prob = new_prob.gather(1, actions).view(-1)
-        # old_prob = old_prob.gather(1, actions).view(-1) 
-        # # Compute ratio (NOTE: this is same as ratio = new_prob/old_prob) 
-        # ratio = new_prob / (old_prob.detach() + 1e-11)
-        #print("actions", actions.squeeze())
+        
         new_prob = new_distr.log_prob(actions.squeeze())
+
         old_prob = old_distr.log_prob(actions.squeeze())
-        # print("\nnew_prob", new_prob)
-        # print("old_prob", old_prob)
-        # print("new_prob == old_prob", new_prob == old_prob)
-        # print("val_pred", val_pred)
-        # print("old_val_pred", old_val_pred)
-        # print("val_pred == old_val_pred", val_true == old_val_pred)
-        # print("val_pred - old_val_pred", val_pred - old_val_pred)
 
-
+        
         ratio = torch.exp(new_prob - old_prob)
-
         surrogate_1 = ratio * adv
         # Clipped policy gradient, ratio clipped between [0.8, 1.2]
         surrogate_2 = torch.clip(ratio, 1.0 - self.args.eps_clip, 1.0 + self.args.eps_clip) * adv
 
         # Entropy regularization
         entropy_pen = -self.args.entropy_lam * new_distr.entropy()
-        
+        #print("Entropy pen", entropy_pen.mean())
         # PPO loss, averaged over several batches
         policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
+        #print("policy_loss", policy_loss)
         policy_loss = policy_loss + entropy_pen.mean()
         # policy_loss = -(torch.log(new_prob) * adv).mean()
 
@@ -385,7 +367,13 @@ class Trainer(ABC):
         vf_loss = self.critic_loss_fn(val_pred, val_true)
 
         # Get apporximate KL between new and old policies
-        approx_kl = (old_prob.detach() - new_prob.detach()).mean().item()
+        if return_step_loss:
+            approx_kl = (old_prob.detach() - new_prob.detach()).mean().item()
+        else:
+            # Only get nonzero idxs for training router 
+            nonzero_idxs = old_prob.flatten().nonzero()
+            approx_kl = (old_prob.detach().flatten()[nonzero_idxs] - new_prob.detach().flatten()[nonzero_idxs]).mean().item()
+
         if self.debug:
             print("approx_kl", approx_kl)
         #print("1.5 * self.args.tgt_kl", 1.5 * self.args.tgt_kl)

@@ -15,11 +15,13 @@ class ALEEnv(Env):
         state, reward, done, info = self.env.step(action)
         state = torch.tensor(state, dtype=torch.float32)
         reward = reward * self.reward_scale
+        state = state/255
         return state, reward, done, info
     
     def reset(self):
         state = self.env.reset()
         state = torch.tensor(state, dtype=torch.float32)
+        state = state/255
         return state#self._current_frame()
     
     def render(self):

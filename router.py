@@ -126,8 +126,8 @@ class Encoder(nn.Module):
         # Create learned positional encodings
         num_patches = (self.args.img_size**2) // self.args.patch_size**2
         if self.args.rl:
-            # class emb + task_emb + hidden_state + num_patches + max_depth
-            max_inp = 4 + self.args.max_depth
+            # class emb + task_emb + num_patches + max_depth
+            max_inp = 3 + self.args.max_depth
         else:
             # class emb + task_emb + num_patches + max_depth
             max_inp = 2 + num_patches + self.args.max_depth

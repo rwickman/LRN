@@ -33,14 +33,14 @@ class ModuleBlockModelRL(nn.Module):
             
             """Hidden Layers."""
 
-            modules.append(
-                LSTMBlock(
-                    nn.LSTMCell(
-                        ale_config.fc_hidden_config[-1][1],
-                        ale_config.fc_hidden_config[-1][1])
-                )
-            )
-            self.lstm_blocks_idxs.append(len(modules) - 1)
+            # modules.append(
+            #     LSTMBlock(
+            #         nn.LSTMCell(
+            #             ale_config.fc_hidden_config[-1][1],
+            #             ale_config.fc_hidden_config[-1][1])
+            #     )
+            # )
+            # self.lstm_blocks_idxs.append(len(modules) - 1)
             
 
             """Actor-critic Layers"""
@@ -85,20 +85,20 @@ class ModuleBlockModelRL(nn.Module):
         self._mbs = nn.ModuleList(modules)
     
 
-    def save_states(self, should_save):
-        for i in self.lstm_blocks_idxs:
-            self._mbs[i].save_states = should_save
+    # def save_states(self, should_save):
+    #     for i in self.lstm_blocks_idxs:
+    #         self._mbs[i].save_states = should_save
 
-    def setup_next_episode(self):
-        """Add initial hidden/cells states to LSTM modules."""
-        for i in self.lstm_blocks_idxs:
-            self._mbs[i].add_zero()
+    # def setup_next_episode(self):
+    #     """Add initial hidden/cells states to LSTM modules."""
+    #     for i in self.lstm_blocks_idxs:
+    #         self._mbs[i].add_zero()
         
 
-    def reset(self):
-        self._num_timesteps = 0
-        for i in self.lstm_blocks_idxs:
-            self._mbs[i].reset()
+    # def reset(self):
+    #     self._num_timesteps = 0
+    #     for i in self.lstm_blocks_idxs:
+    #         self._mbs[i].reset()
     
     def get_mb_num(self, action):
         return (action - 1) % 6
@@ -107,7 +107,7 @@ class ModuleBlockModelRL(nn.Module):
         return self._mbs[idx]
     
 
-    def forward(self, x, actions, step_to_batch_idx=None, return_hidden_state=False, batch_idxs=[]):
+    def forward(self, x, actions):
         """Forward the batch of inputs through the Function Blocks.
 
         Args:
@@ -123,30 +123,30 @@ class ModuleBlockModelRL(nn.Module):
         batch_size = x.shape[0]
         actor_preds = torch.zeros((batch_size, ale_config.num_actions), device=ale_config.device).detach()
         critic_preds = torch.zeros((batch_size, 1), device=ale_config.device).detach()
-        hidden_states = []
+        # hidden_states = []
         for i in range(batch_size):
             cur_x = x[i:i+1]
             
             for t, a_t in enumerate(actions[i]):
                 cur_mb = self.get_mb(a_t)
                 
-                if t == ale_config.lstm_timestep:
-                    # Run through LSTM
-                    if step_to_batch_idx is not None:
-                        if i in step_to_batch_idx:
-                            # Make LSTM module set initial state to saved state
-                            cur_mb.init_states(step_to_batch_idx[i])
+                # if t == ale_config.lstm_timestep:
+                #     # Run through LSTM
+                #     if step_to_batch_idx is not None:
+                #         if i in step_to_batch_idx:
+                #             # Make LSTM module set initial state to saved state
+                #             cur_mb.init_states(step_to_batch_idx[i])
 
-                        cur_x = cur_mb(cur_x, batch_idxs[i])
-                    else:
-                        cur_x = cur_mb(cur_x, self._num_timesteps)
-                        self._num_timesteps += 1
+                #         cur_x = cur_mb(cur_x, batch_idxs[i])
+                #     else:
+                #         cur_x = cur_mb(cur_x, self._num_timesteps)
+                #         self._num_timesteps += 1
                     
-                    if return_hidden_state:
-                        hidden_states.append(cur_x.clone())
+                #     if return_hidden_state:
+                #         hidden_states.append(cur_x.clone())
 
 
-                elif t >= ale_config.lstm_timestep + 1:
+                if t >= ale_config.lstm_timestep + 1:
                     # Run through actor layers
                     actor_out, critic_out = cur_mb(cur_x)
                 else:
@@ -156,10 +156,10 @@ class ModuleBlockModelRL(nn.Module):
             actor_preds[i] = actor_out
             critic_preds[i] = critic_out 
         
-        if return_hidden_state:
-            return actor_preds, critic_preds, torch.cat(hidden_states)
-        else:
-            return actor_preds, critic_preds
+        #if return_hidden_state:
+        return actor_preds, critic_preds#, torch.cat(hidden_states)
+        # else:
+        #     return actor_preds, critic_preds
 
     def get_num_mbs(self):
         return len(self._mbs)
