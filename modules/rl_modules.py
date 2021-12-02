@@ -64,18 +64,19 @@ class ActorCritic(nn.Module):
         self.actor_act_1 = nn.GELU()
         self.actor_act_2 = nn.Softmax(dim=-1)
         
-        self.critic_1 = nn.Linear(self.args.ac_hidden_size, self.args.ac_hidden_size)
-        self.critic_2 = nn.Linear(self.args.ac_hidden_size, 1)
-        self.critic_act_1 = nn.GELU()
+        # self.critic_1 = nn.Linear(self.args.ac_hidden_size, self.args.ac_hidden_size)
+        # self.critic_2 = nn.Linear(self.args.ac_hidden_size, 1)
+        # self.critic_act_1 = nn.GELU()
 
     def forward(self, x):
         actor_out = self.actor_act_1(self.actor_1(x))
         actor_out = self.actor_act_2(self.actor_2(actor_out))
 
-        critic_out = self.critic_act_1(self.critic_1(x))
-        critic_out = self.critic_2(critic_out)
+        # critic_out = self.critic_act_1(self.critic_1(x))
+        # critic_out = self.critic_2(critic_out)
 
-        return actor_out, critic_out
+        #return actor_out, critic_out
+        return actor_out
 
 class ResidualBlock(nn.Module):
     def __init__(self, num_ch):

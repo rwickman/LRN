@@ -119,10 +119,9 @@ class ModuleBlockModelRL(nn.Module):
         """
         # TODO: optimize this to predict over a batch at a time
         # TODO: This will require iterating over grouping together inputs each timestep
-        import time
         batch_size = x.shape[0]
         actor_preds = torch.zeros((batch_size, ale_config.num_actions), device=ale_config.device).detach()
-        critic_preds = torch.zeros((batch_size, 1), device=ale_config.device).detach()
+        #critic_preds = torch.zeros((batch_size, 1), device=ale_config.device).detach()
         # hidden_states = []
         for i in range(batch_size):
             cur_x = x[i:i+1]
@@ -148,16 +147,16 @@ class ModuleBlockModelRL(nn.Module):
 
                 if t >= ale_config.lstm_timestep + 1:
                     # Run through actor layers
-                    actor_out, critic_out = cur_mb(cur_x)
+                    actor_out = cur_mb(cur_x)
                 else:
                     # Run through other modules, including critic modules
                     cur_x = cur_mb(cur_x)
 
             actor_preds[i] = actor_out
-            critic_preds[i] = critic_out 
+            # critic_preds[i] = critic_out 
         
         #if return_hidden_state:
-        return actor_preds, critic_preds#, torch.cat(hidden_states)
+        return actor_preds#, critic_preds#, torch.cat(hidden_states)
         # else:
         #     return actor_preds, critic_preds
 

@@ -219,7 +219,7 @@ class Trainer(ABC):
                         action_masks[m_batch_idxs])
                     
                     actor_loss, critic_loss, should_stop = self.ppo_loss(
-                        advs[m_batch_idxs], 
+                        advs[m_batch_idxs].detach(), 
                         router_results.action_probs[m_batch_idxs], 
                         new_prob, 
                         returns[m_batch_idxs], 
@@ -230,11 +230,12 @@ class Trainer(ABC):
                     if should_stop:
                         print("\nnew_prob[:5]", new_prob[:5])
                         print("task_ids_steps[m_batch_idxs][:5]", task_ids_steps[m_batch_idxs][:5])
-                        #print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:5].detach().cpu().numpy())
+                        #print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
                         print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
                         print("Critic Outputs", val_pred[:50].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:50].detach().cpu().numpy())
+                        #print("returns[m_batch_idxs]", returns[m_batch_idxs])
+                        print("actor_losses", actor_losses)
                         print("critic_losses", critic_losses)
-
                         print("self._mb_count", self._mb_count)
                         return actor_losses, critic_losses
                     
@@ -251,11 +252,13 @@ class Trainer(ABC):
                     actor_losses.append(actor_loss.detach().cpu().numpy())
 
         if self.debug:
-            print("new_prob[:5]", new_prob[:5])
+            print("\nnew_prob[:5]", new_prob[:5])
             print("task_ids_steps[m_batch_idxs][:5]", task_ids_steps[m_batch_idxs][:5])
             #print("Critic Outputs", val_pred[:5].squeeze(-1).detach().cpu().numpy(), "VS", tdlamret[m_batch_idxs][:5].detach().cpu().numpy())
             print("ADVS", advs[m_batch_idxs][:5].detach().cpu().numpy())
             print("Critic Outputs", val_pred[:50].squeeze(-1).detach().cpu().numpy(), "VS", returns[m_batch_idxs][:50].detach().cpu().numpy())
+            # print("returns[m_batch_idxs]", returns[m_batch_idxs][:50])
+            print("actor_losses", actor_losses)
             print("critic_losses", critic_losses)
             print("self._mb_count", self._mb_count)
     
@@ -355,16 +358,15 @@ class Trainer(ABC):
         # val_true = val_true.unsqueeze(-1).unsqueeze(-1)
 
         #old_val_pred =old_val_pred.unsqueeze(-1)
-        #val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
+        val_pred_clipped = old_val_pred + torch.clip(val_pred - old_val_pred, -self.args.val_clip, self.args.val_clip) 
 
         # Unclipped value loss
-        #vf_losses1 = torch.square(val_true - val_pred)
+        vf_losses1 = torch.square(val_true - val_pred)
 
         # Clipped value loss
-        #vf_losses2 = torch.square(val_true - val_pred_clipped)
-        #vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
-        
-        vf_loss = self.critic_loss_fn(val_pred, val_true)
+        vf_losses2 = torch.square(val_true - val_pred_clipped)
+        vf_loss = torch.mean(torch.max(vf_losses1, vf_losses2))
+        #vf_loss = self.critic_loss_fn(val_pred, val_true)
 
         # Get apporximate KL between new and old policies
         if return_step_loss:

@@ -17,6 +17,7 @@ from workers.agent_worker import AgentWorker
 from envs.ale_env import ALEEnv
 from envs.cartpole_env import CartpoleEnv
 from model_util import RouterResult
+from random_network_distillation import Distillation
 
 mp.set_start_method("spawn", force=True)
 mp.set_sharing_strategy('file_system')
@@ -48,21 +49,22 @@ class ExpBuffer:
         self.states = torch.zeros(self.max_timesteps, ale_config.state_size, device=ale_config.device)
         self.rewards = torch.zeros(self.num_env, self.args.max_env_steps, device=ale_config.device)
         self.actions = torch.zeros(self.max_timesteps, device=ale_config.device)
-        self.ac_critic_preds = torch.zeros(self.num_env, self.args.max_env_steps, device=ale_config.device)
         self.ac_actor_preds = torch.zeros(self.max_timesteps, ale_config.num_actions, device=ale_config.device)
+        self.ac_critic_preds = torch.zeros(self.num_env, self.args.max_env_steps, device=ale_config.device)
         self.dones = torch.zeros(self.num_env, self.args.max_env_steps, device=ale_config.device)
         self.router_results = None
         self.task_ids = torch.zeros(self.max_timesteps, 1, device=ale_config.device, dtype=torch.int32)
+        self.intrinsic_rewards = torch.zeros(self.num_env, self.args.max_env_steps, device=ale_config.device)
 
-
-    def add_ex(self, state, reward, action, ac_actor_pred, ac_critic_pred, env_idx, done, task_id):
+    def add_ex(self, state, reward, action, ac_actor_pred, env_idx, done, task_id, intrinsic_reward):
         self.states[self.cur_step] = state
         self.rewards[env_idx, self.cur_step//self.num_env] = reward
         self.actions[self.cur_step] = action
-        self.ac_critic_preds[env_idx, self.cur_step//self.num_env] = ac_critic_pred
+        # self.ac_critic_preds[env_idx, self.cur_step//self.num_env] = ac_critic_pred
         self.ac_actor_preds[self.cur_step] = ac_actor_pred
         self.dones[env_idx, self.cur_step//self.num_env] = done
         self.task_ids[self.cur_step] = task_id
+        self.intrinsic_rewards[env_idx, self.cur_step//self.num_env] = intrinsic_reward
         self.cur_step += 1
     
     def add_router_results(self, router_results):
@@ -88,7 +90,9 @@ class ExpBuffer:
             
     
     def get_rewards_and_critic(self):
-        return self.rewards, self.ac_critic_preds, self.dones
+        #print("self.router_results.critic_outputs.shape", self.router_results.critic_outputs.shape)
+        critic_outputs = self.router_results.critic_outputs[:, -1].reshape(-1,self.num_env).T
+        return self.rewards, critic_outputs, self.dones
 
 
 
@@ -100,6 +104,8 @@ class ALETrainer(Trainer):
         self.args = args
         self.moving_stats = MovingStats(args)
         self.exp_buffer = ExpBuffer(args)
+        self.distill = Distillation(self.args)
+
 
 
         self._init_workers()
@@ -118,7 +124,8 @@ class ALETrainer(Trainer):
                 "router_actor_loss": [],
                 "forb_loss": [],
                 "avg_rewards_per_env": [],
-                "total_ep_rewards": self.total_ep_rewards
+                "total_ep_rewards": self.total_ep_rewards,
+                "distill_losses" : []
             }
 
     def _init_workers(self):
@@ -146,9 +153,13 @@ class ALETrainer(Trainer):
         
         #rewards = torch.tensor(rewards, dtype=torch.float32, device=ale_config.device)
         #print("rewards", rewards.max(), rewards.min(), rewards.mean())
-        #rewards = self.moving_stats.standardize_rewards(rewards)
+        print("BEFORE intrinsic_reward", self.exp_buffer.intrinsic_rewards, self.exp_buffer.intrinsic_rewards.mean(), self.exp_buffer.intrinsic_rewards.min(), self.exp_buffer.intrinsic_rewards.max())
+        intrinsic_reward = self.moving_stats.standardize_rewards(self.exp_buffer.intrinsic_rewards) * 0.1
+        print("intrinsic_reward", intrinsic_reward, intrinsic_reward.mean(), intrinsic_reward.min(), intrinsic_reward.max())
         rewards, ac_critic_preds, dones = self.exp_buffer.get_rewards_and_critic()
+        print("rewards", rewards, rewards.mean(), rewards.min(), rewards.max())
         print("dones", dones, dones.sum(axis=-1))
+        rewards = rewards + intrinsic_reward
         returns, advs, tdlamret = self.compute_return(rewards, ac_critic_preds, dones)
 
 
@@ -164,33 +175,36 @@ class ALETrainer(Trainer):
         """Train modules."""
         #self.exp_buffer.act = torch.tensor(actions, dtype=torch.int64, device=ale_config.device).unsqueeze(1)
         advs = advs.permute(1, 0).reshape(-1)
-        tdlamret = tdlamret.permute(1, 0).reshape(-1)
+        #tdlamret = tdlamret.permute(1, 0).reshape(-1)
         
+        print("self.exp_buffer.router_results.actions[0:10]", self.exp_buffer.router_results.actions[0:10])
+        print("self.exp_buffer.task_ids[:10].squeeze(1)", self.exp_buffer.task_ids[:10].squeeze(1))
+        print("self.exp_buffer.router_results.action_probs[:10, 0]", self.exp_buffer.router_results.action_probs[:10, 0])
 
-        critic_step_loss, mb_actor_losses, mb_critic_losses, forb_losses = self.train_rl_modules(
+
+        mb_actor_losses, forb_losses = self.train_rl_modules(
             advs,
-            tdlamret,
-            returns,
             self.exp_buffer.ac_actor_preds,
             self.exp_buffer.actions.unsqueeze(1),
             self.exp_buffer.states,
             self.exp_buffer.router_results,
-            self.exp_buffer.ac_critic_preds.permute(1, 0).reshape(-1),
             self.exp_buffer.dones.permute(1, 0).reshape(-1))
+
+        distill_losses = self.distill.train(self.exp_buffer.states)
 
 
         """Train router."""
 
         #print("router_rewards[:, -1]", router_rewards[:, -1])            
         # Clip the critic loss
-        critic_step_loss = -torch.clip(critic_step_loss, 0, 1.0)
-        print("critic_step_loss[:25]", critic_step_loss[:25])
-        print("router_rewards[:25, -1]", router_rewards[:25, -1])
-        print("router_rewards[:, -1]", router_rewards[:, -1])
-        # Add critic loss to router rewards to encourage decreasing this value as well
-        router_rewards[:, -1] += critic_step_loss.detach()
-        print("router_rewards.shape", router_rewards.shape)
-        print("self.exp_buffer.router_results.critic_outputs.shape", self.exp_buffer.router_results.critic_outputs.shape)
+        # critic_step_loss = -torch.clip(critic_step_loss, 0, 1.0)
+        # print("critic_step_loss[:25]", critic_step_loss[:25])
+        # print("router_rewards[:25, -1]", router_rewards[:25, -1])
+        # print("router_rewards[:, -1]", router_rewards[:, -1])
+        # # Add critic loss to router rewards to encourage decreasing this value as well
+        # router_rewards[:, -1] += critic_step_loss.detach()
+        # print("router_rewards.shape", router_rewards.shape)
+        # print("self.exp_buffer.router_results.critic_outputs.shape", self.exp_buffer.router_results.critic_outputs.shape)
         router_actor_losses, router_critic_losses = self.train_router(
             self.exp_buffer.states.unsqueeze(1),
             self.exp_buffer.task_ids,
@@ -199,10 +213,10 @@ class ALETrainer(Trainer):
         
 
         self._train_dict["mb_actor_loss"].append(sum(mb_actor_losses)/len(mb_actor_losses))
-        self._train_dict["mb_critic_loss"].append(sum(mb_critic_losses)/len(mb_critic_losses))
+        #self._train_dict["mb_critic_loss"].append(sum(mb_critic_losses)/len(mb_critic_losses))
         self._train_dict["router_actor_loss"].append(sum(router_actor_losses)/len(router_actor_losses))
         self._train_dict["router_critic_loss"].append(sum(router_critic_losses)/len(router_critic_losses))
-        
+        self._train_dict["distill_losses"].append(sum(distill_losses)/len(distill_losses))
         # This line is for backwards compatibility
         if "forb_losses" not in self._train_dict:
             self._train_dict["forb_losses"] = []    
@@ -219,6 +233,7 @@ class ALETrainer(Trainer):
         # # Save models
         self.save()
         self.moving_stats.save()
+        self.distill.save()
         # print("Total Episode time", time.time() - start_e_i, "\n")
 
         self._train_dict["ep_returns"].append(float(returns.mean()))
@@ -262,10 +277,10 @@ class ALETrainer(Trainer):
                             state_msg.reward,
                             actions[env_idx],
                             actor_pred[env_idx],
-                            critic_pred[env_idx],
                             env_idx,
                             state_msg.done,
-                            task_ids[env_idx])
+                            task_ids[env_idx],
+                            intrinsic_reward[env_idx])
                         
                         self.cur_ep_rewards[env_idx] += state_msg.reward 
                         if state_msg.done:
@@ -291,13 +306,18 @@ class ALETrainer(Trainer):
                 cur_states = torch.cat(cur_states)
                 task_ids = ale_config.envs_ids.clone()
 
+                # Make model predictions
                 with torch.no_grad():
                     # Get current actor-critic policy
                     router_results = self._router(cur_states.unsqueeze(1), task_ids)
                     # TODO: Handle receiving all hidden states
                     # Use router module selections to get actor and critic predictions
-                    actor_pred, critic_pred = self._mb_model(
+                    actor_pred = self._mb_model(
                         cur_states, router_results.actions)
+
+                    # Get intrinsic reward
+                    intrinsic_reward = self.distill.get_intrinsic_reward(cur_states)
+
 
 
                 # Sample an action
@@ -408,16 +428,14 @@ class ALETrainer(Trainer):
         return seq_batch_ids_list, step_to_batch_idx_batch
         
 
-    def train_rl_modules(self, advs, tdlamret, returns, old_actor_preds, actions, states, router_results, old_critic_preds, dones):
+    def train_rl_modules(self, advs, old_actor_preds, actions, states, router_results, dones):
         def compute_forb_loss(mb_out_1, mb_out_2):
             """Loss used for enforcing orthorganility constraint on modules."""
             return torch.linalg.matrix_norm(torch.mm(mb_out_1.T, mb_out_2))
         
-        critic_losses = []
         actor_losses = []
         forb_losses = []
         batch_size = len(actions)
-        critic_step_loss = torch.zeros(actions.shape[0], device=ale_config.device)
         for e_i in range(self.args.noptepochs):
             #batch_ids = torch.arange(batch_size)
             # Create batches of timesteps
@@ -437,7 +455,7 @@ class ALETrainer(Trainer):
                 #print("actions[m_batch_idxs]", actions[m_batch_idxs])
     
 
-                actor_pred, critic_pred = self._mb_model(
+                actor_pred = self._mb_model(
                     states[m_batch_idxs],
                     router_results.actions[m_batch_idxs])
                 
@@ -488,42 +506,30 @@ class ALETrainer(Trainer):
                             actor_out_2 = ac_mb_2.actor_1(rand_inp)
 
                             # Run through first layer of critic network
-                            critic_out_1 = ac_mb_1.critic_1(rand_inp)
-                            critic_out_2 = ac_mb_2.critic_1(rand_inp)
+                            # critic_out_1 = ac_mb_1.critic_1(rand_inp)
+                            # critic_out_2 = ac_mb_2.critic_1(rand_inp)
 
                             forb_loss += compute_forb_loss(actor_out_1, actor_out_2)
-                            forb_loss += compute_forb_loss(critic_out_1, critic_out_2)
+                            # forb_loss += compute_forb_loss(critic_out_1, critic_out_2)
                 else:
                     forb_loss = torch.tensor(0, device=ale_config.device)
                         
 
-                        
-
-
-                
                 
                 print("TOTAL forb_loss", forb_loss, forb_loss * ale_config.forb_lam)
 
-                
-                # if m_i == 0 and e_i == 0:
-                #     print(self.exp_buffer.hidden_states[m_batch_idxs][0].squeeze(1) == hidden_states.detach()[0])
-                #     print("self.exp_buffer.hidden_states[m_batch_idxs][0]", self.exp_buffer.hidden_states[m_batch_idxs][0].squeeze(1))
-                #     print("self.exp_buffer.hidden_states[m_batch_idxs][0].squeeze(1)", self.exp_buffer.hidden_states[m_batch_idxs][0].squeeze(1))
-                #     self.exp_buffer.hidden_states[m_batch_idxs] = hidden_states.detach().unsqueeze(1)
 
 
-                actor_loss, critic_loss, critic_step_loss_batch, should_stop = self.ppo_loss(
+                actor_loss, _, _, should_stop = self.ppo_loss(
                     advs[m_batch_idxs],
                     old_actor_preds[m_batch_idxs],
                     actor_pred,
-                    returns[m_batch_idxs],
-                    critic_pred.view(-1),
+                    torch.zeros(1),
+                    torch.zeros(1),
                     actions[m_batch_idxs],
-                    old_critic_preds[m_batch_idxs].view(-1),
+                    torch.zeros(1),
                     True)
                 
-
-                critic_losses.append(self.args.critic_lam * critic_loss.detach().cpu().numpy())
                     
                 actor_losses.append(actor_loss.detach().cpu().numpy())
                 forb_losses.append(forb_loss.detach().cpu().numpy() * ale_config.forb_lam)
@@ -533,22 +539,19 @@ class ALETrainer(Trainer):
                     # loss = actor_loss + self.args.critic_lam * critic_loss
                     # loss.backward()
                     # self.mb_optim.zero_grad()    
-                    return critic_step_loss, actor_losses, critic_losses, forb_losses
+                    return actor_losses, forb_losses
                 
 
-                critic_step_loss[m_batch_idxs] = critic_step_loss_batch
+
 
                 print("MODULES actor_loss", actor_loss * 10)
-                print("MODULES critic_loss", critic_loss * self.args.critic_lam)
                 #print("tdlamret.view(-1)", tdlamret[m_batch_idxs].view(-1)[:10])
-                print("returns.view(-1)", returns[m_batch_idxs].view(-1)[:10])
-                print("critic_pred.view(-1)", critic_pred.view(-1)[:10])
                 print("actor_pred", actor_pred[0:2])
                 print("len(m_batch_idxs)", len(m_batch_idxs))
                 
 
                 self.mb_optim.zero_grad()
-                loss = actor_loss * 10 + self.args.critic_lam * critic_loss + ale_config.forb_lam * forb_loss
+                loss = actor_loss * 10 + ale_config.forb_lam * forb_loss
                 #loss = actor_loss + self.args.critic_lam * critic_loss
                 loss.backward()
                 #print("LSTM GRAD weight_ih", self._mb_model.get_mb(8).layer.weight_ih.grad.max(), self._mb_model.get_mb(8).layer.weight_ih.grad.min(), self._mb_model.get_mb(8).layer.weight_ih.grad.mean(), self._mb_model.get_mb(8).layer.weight_ih.grad.std())
@@ -559,7 +562,7 @@ class ALETrainer(Trainer):
 
                 print("\n")
 
-        return critic_step_loss, actor_losses, critic_losses, forb_losses
+        return actor_losses, forb_losses
         
         #self.ppo_loss(adv, )
 
