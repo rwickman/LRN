@@ -4,34 +4,10 @@ import torch.nn.functional as F
 
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from gumbel_softmax import gumbel_softmax
 
-from model_builder import ModelBuilder
-
-
-
-class Encoder(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-
-        enc_layer = nn.TransformerEncoderLayer(
-                d_model=self.args.emb_size,
-                dim_feedforward=self.args.dff,
-                activation="gelu",
-                nhead=self.args.num_heads,
-                dropout=self.args.drop_rate,
-                batch_first=True)
-
-        self.enc = nn.TransformerEncoder(enc_layer, self.args.num_enc_layers)
-
-    def forward(self, x):
-        """
-            x: task emb, example emb, used mbs embs
-        """
-        x = self.enc(x)
-        
-        return x
+from taskrouter.helpers.gumbel_softmax import gumbel_softmax
+from taskrouter.helpers.model_builder import ModelBuilder
+from taskrouter.models.blocks import ImageEncoder, PatchEncoder, TransformerEncoder
 
 
 
@@ -42,31 +18,56 @@ class TransformerRouter(nn.Module):
         self.config = config
         
         # Token for prediction the actor prediction
-        self.cls_token = nn.Parameter(torch.randn(1, 1, self.args.emb_size))
-        
+        # self.cls_token = nn.Parameter(torch.randn(1, 1, self.args.emb_size))        
         num_patches = (self.config.img_size ** 2) // self.args.patch_size**2
-        self.pos_encoding = nn.Parameter(torch.randn(1, 2 + num_patches + self.config.routing_depth, self.args.emb_size))
+        if self.args.vit:
+            self.pos_encoding = nn.Parameter(torch.randn(1, self.config.routing_depth + num_patches, self.args.emb_size))
+        else:
+            self.pos_encoding = nn.Parameter(torch.randn(1, self.config.routing_depth, self.args.emb_size))
         
-        self.encoder = Encoder(self.args)
-        
+        self.encoder = TransformerEncoder(self.args)
+        self.dropout = nn.Dropout(self.args.drop_rate)
+        self.layer_norm = nn.LayerNorm(self.args.emb_size)
+
         # Maps each embedding to distr value
-        self.actor_out1 = nn.Linear(self.args.emb_size, self.args.emb_size)
-        self.actor_out2 = nn.Linear(self.args.emb_size, self.config.num_modules)
+        if self.args.vit:
+            self.actor_out1 = nn.Linear(self.args.emb_size, self.config.num_modules)
+
+        else:
+            self.actor_out1 = nn.Linear(self.args.emb_size * 2, self.args.emb_size)
+            self.actor_out2 = nn.Linear(self.args.emb_size, self.config.num_modules)
+
 
     def forward(self, state, action_mask=None):
        
         # Add prediction token to state
-        cls_tokens = repeat(self.cls_token, '() n d -> b n d', b = state.shape[0])
-        state = torch.cat((cls_tokens, state), 1)
-        state = state + self.pos_encoding[:, :state.shape[1]]
+        # cls_tokens = repeat(self.cls_token, '() n d -> b n d', b = state.shape[0])
+        # state = torch.cat((cls_tokens, state), 1)
+        if not self.args.vit:
+            if state.shape[1] > 2:
+                state[:, 2:] = state[:, 2:] + self.pos_encoding[:, :state.shape[1]-2]
+        else:
+            state[:, 1:] = state[:, 1:] + self.pos_encoding[:, :state.shape[1]-1]
 
-        
         enc_output = self.encoder(state)
-        
 
         # Get the class prediction
-        mb_logits = F.gelu(self.actor_out1(enc_output[:, 0]))
-        mb_logits = self.actor_out2(mb_logits)
+        if self.args.vit:
+            # print("\nenc_output[:, 0] mean", enc_output[:, 0].mean(axis=1))
+            # print("state[:, 0] mean", state[:, 0].mean(axis=1))
+
+            mb_logits = self.dropout(enc_output[:, 0])
+            #print("mb_logits mean", mb_logits.mean(axis=1))
+            mb_logits = self.actor_out1(mb_logits)
+        else:
+            mb_logits = self.actor_out1(torch.cat((enc_output[:, 0] + state[:, 0], enc_output[:, 1] + state[:, 1]), 1))
+            mb_logits = F.gelu(self.layer_norm(mb_logits))
+            mb_logits = self.dropout(mb_logits)
+            mb_logits = self.actor_out2(mb_logits)
+
+        # print("enc_output[:, 0] + state[:, 0]", enc_output[0, 0] + state[0, 0])
+        # print("enc_output[:, 1] + state[:, 1]", enc_output[0, 1] + state[0, 1], "\n")
+
 
 
         # Apply masks over invalid actions
@@ -77,21 +78,6 @@ class TransformerRouter(nn.Module):
         
         return mb_logits
 
-class ImgEncoder(nn.Module):
-    """Create patch embeddings for a given image."""
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-        self.patch_dim = self.args.patch_size ** 2 * self.args.in_channels
-        self.to_patch_embedding = nn.Sequential(
-            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = self.args.patch_size, p2 = self.args.patch_size),
-            nn.Linear(self.patch_dim, self.args.emb_size),
-        )
-
-    def forward(self, imgs):
-        # Extract patches and embed them
-        patches = self.to_patch_embedding(imgs)
-        return patches
 
 class Router(nn.Module):
     def __init__(self, args, config):
@@ -107,7 +93,10 @@ class Router(nn.Module):
 
         self.task_embs = nn.Embedding(self.config.num_tasks, self.args.emb_size)
         
-        self.state_encoder = ImgEncoder(self.args)
+        if self.args.vit:
+            self.state_encoder = PatchEncoder(self.args)
+        else:
+            self.state_encoder = ImageEncoder(self.args, self.config)
 
 
     def forward(self, imgs, task_ids, temperature=5, argmax=False):
@@ -157,7 +146,9 @@ class Router(nn.Module):
 
             # Use Gumbel ST Estimator
             if argmax:
-                mb_choice = gumbel_softmax(mb_logits, self.config.device, temperature=0.00001)
+                #mb_choice = mb_logits.argmax(dim=-1)
+                mb_choice = torch.zeros_like(mb_logits, device=self.config.device)
+                mb_choice[torch.arange(mb_logits.shape[0]), mb_logits.argmax(dim=-1)] = 1
             else:
                 mb_choice = gumbel_softmax(mb_logits, self.config.device, temperature)
 
@@ -170,5 +161,5 @@ class Router(nn.Module):
             
             router_outs[:, i] = mb_choice
 
-        return router_outs, logits
+        return router_outs, logits, actions_masks
     
