@@ -13,7 +13,7 @@ def default_group(in_channels, out_channels, stride=1):
     mbs.append(
             ModuleBlock(
                 nn.Conv2d(in_channels, out_channels, 3, padding=1, stride=stride),
-                nn.InstanceNorm2d(out_channels, affine=True), 
+                nn.BatchNorm2d(out_channels), 
                 nn.LeakyReLU()
             )
     )
@@ -21,7 +21,7 @@ def default_group(in_channels, out_channels, stride=1):
     mbs.append(
         ModuleBlock(
             nn.Conv2d(in_channels, out_channels, 5, padding=2, stride=stride),
-            nn.InstanceNorm2d(out_channels, affine=True), 
+            nn.BatchNorm2d(out_channels), 
             nn.LeakyReLU()
             )
     )
@@ -29,7 +29,7 @@ def default_group(in_channels, out_channels, stride=1):
     mbs.append(
         ModuleBlock(
             nn.Conv2d(in_channels, out_channels, 7, padding=3, stride=stride),
-            nn.InstanceNorm2d(out_channels, affine=True), 
+            nn.BatchNorm2d(out_channels), 
             nn.LeakyReLU()
             )
     )

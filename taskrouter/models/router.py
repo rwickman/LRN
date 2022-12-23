@@ -88,7 +88,6 @@ class Router(nn.Module):
         # self._valid_mbs_dict = {}
 
         self.trans_router = TransformerRouter(self.args, self.config)
-        print("self.config.num_modules", self.config.num_modules)
         self.mb_embs = nn.Embedding(self.config.num_modules, self.args.emb_size)
 
         self.task_embs = nn.Embedding(self.config.num_tasks, self.args.emb_size)

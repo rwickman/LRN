@@ -33,7 +33,3 @@ for i in range(len(strides)):
     for j in range(len(strides)):
         if strides[i] == strides[j] and i != j:
             valid_mbs[i].extend(valid_mbs[j])
-    
-
-
-print(valid_mbs)

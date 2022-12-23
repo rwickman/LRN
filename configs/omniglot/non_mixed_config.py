@@ -47,6 +47,5 @@ valid_mbs[i+1+num_hidden+1] = list(range(
 
 # Create entries for output modules
 output_start_idx = down_start_idx + unique_downsample_modules * (num_downsample-1) + 2
-print(valid_mbs)
 # valid_mbs[1+num_hidden+num_downsample] = list(range(
 #     output_start_idx, output_start_idx + num_tasks))

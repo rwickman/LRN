@@ -10,18 +10,19 @@ num_filters=48
 
 # num_hidden=4
 # num_downsample=4
-num_tasks = 20
+num_tasks = 30
 
 omniglot_dir = "/media/data/datasets/omniglot/multitask"
 
 routing_depth = 8
 strides = [2, 2, 1, 2, 2, 1, 2, 1]
+num_modules = []
 
 unique_inp_modules = 3
-unique_hidden_modules = 6
+unique_hidden_modules = 7
 unique_downsample_modules = 3
 
-num_modules = 8 * 7#unique_inp_modules + num_hidden * unique_hidden_modules + num_downsample * unique_downsample_modules
+num_modules = routing_depth * unique_hidden_modules#unique_inp_modules + num_hidden * unique_hidden_modules + num_downsample * unique_downsample_modules
 
 """Create the valid modules for each layer."""
 
@@ -29,5 +30,3 @@ valid_mbs = {}
 
 for i in range(len(strides)):
     valid_mbs[i] = list(range(i * 7, (i+1) * 7)) 
-
-# print(valid_mbs)

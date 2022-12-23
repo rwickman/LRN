@@ -54,6 +54,21 @@ def create_disc_train_data(task_ids, logits, config):
 def extract_lstm_out(x, data_idxs):
     return x[torch.arange(x.shape[0]), data_idxs].squeeze()
 
+def compute_entropy_loss(config, logits):
+    
+    
+    #tgt = torch.tensor([1/config.unique_hidden_modules]).to(config.device)
+    #tgt = tgt.repeat(config.routing_depth, config.num_modules)
+    tgt = torch.zeros(config.routing_depth, config.num_modules).to(config.device)
+    for idx, valid_idxs in config.valid_mbs.items():
+        tgt[idx, torch.tensor(valid_idxs)] = 1/config.unique_hidden_modules
+
+    avg_logits = logits.mean(dim=0)
+    
+    return F.cross_entropy(avg_logits, tgt)
+    
+
+
 
 
 # print_iter = 0
