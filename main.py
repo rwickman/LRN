@@ -95,7 +95,7 @@ if __name__ == "__main__":
         help="Temperature to use for router.")    
     hyper_args.add_argument("--temperature", type=float, default=5.0,
         help="Temperature to use for router.")
-    hyper_args.add_argument("--temp_decay_steps", type=int, default=1000,
+    hyper_args.add_argument("--temp_decay_steps", type=int, default=10000,
         help="Temperature to use for router.")
     hyper_args.add_argument("--max_prob", type=float, default=0.5,
         help="Max probability for module.")
@@ -104,7 +104,8 @@ if __name__ == "__main__":
         
     hyper_args.add_argument("--entropy_lam", type=float, default=0.1,
         help="Entropy lambda.")        
-
+    hyper_args.add_argument("--cond_entropy_lam", type=float, default=0.1,
+        help="Entropy lambda.")      
 
 
 

@@ -116,10 +116,6 @@ def default_group(in_channels, out_channels, stride=1, only_conv=False):
                 )
             )
 
-
-
-
-
     return mbs
 
 
@@ -145,9 +141,6 @@ class ModuleBlockModel(nn.Module):
             nn.GroupNorm(4, 48),
             nn.ReLU()
         )
-
-
-
 
         for stride in (self.config.strides):
             if self.args.only_3x3:

@@ -38,6 +38,7 @@ class OmniglotDataset(Dataset):
     def __init__(self, img_files, task_ids, class_ids, img_size=105, aug=False):
         self.img_files = img_files
         self.task_ids = torch.tensor(task_ids)
+        print("self.task_ids.unique()", self.task_ids.unique())
         self.class_ids = torch.tensor(class_ids)
         self.aug = aug
         print("len(self.img_files)", len(self.img_files))
@@ -65,7 +66,7 @@ class OmniglotDataset(Dataset):
 
 def load_omniglot():
     print("LOADING OMNIGLOT")
-    omniglot_dir = "/media/data/datasets/omniglot/multitask"
+    omniglot_dir = "D:\Pictures\datasets\omniglot\images_background\images_background"
 
     langs = os.listdir(omniglot_dir)
 
@@ -114,7 +115,7 @@ def load_omniglot():
                     task_ids_test.append(task_id)
     
     print("TRAIN DATASET")
-    train_dataset = OmniglotDataset(dataset_files_train, task_ids_train, class_ids_train, aug=True)
+    train_dataset = OmniglotDataset(dataset_files_train, task_ids_train, class_ids_train)
     print("VAL DATASET")
     val_dataset = OmniglotDataset(dataset_files_val, task_ids_val, class_ids_val)
     print("TEST DATASET")

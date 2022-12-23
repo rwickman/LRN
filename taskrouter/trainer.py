@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from taskrouter.helpers.data_loader import load_omniglot
 from taskrouter.models.discriminator import Discriminator
 from taskrouter.models.lrn_model import LRNModel
-from taskrouter.helpers.model_util import create_disc_train_data
+from taskrouter.helpers.model_util import create_disc_train_data, compute_entropy_loss
 class Trainer:
     def __init__(self, args, config):
         self.args = args
@@ -41,11 +41,10 @@ class Trainer:
         self.train_dataloader = DataLoader(
             train_dataset,
             self.args.batch_size,
-            num_workers=4,
+            num_workers=2,
             prefetch_factor=8,
             drop_last = True,
-            shuffle=True,
-            multiprocessing_context="spawn")
+            shuffle=True)
 
         self.val_dataloader = DataLoader(
             val_dataset,
@@ -53,8 +52,7 @@ class Trainer:
             num_workers=4,
             prefetch_factor=8,
             drop_last = False,
-            shuffle=True,
-            multiprocessing_context="spawn")
+            shuffle=True)
         
         self.test_dataloader = DataLoader(
             test_dataset,
@@ -62,8 +60,7 @@ class Trainer:
             num_workers=4,
             prefetch_factor=8,
             drop_last = False,
-            shuffle=True,
-            multiprocessing_context="spawn")
+            shuffle=True)
 
 
         self.train_dict = {
@@ -195,7 +192,6 @@ class Trainer:
 
             for imgs, task_ids, class_ids in tqdm(self.train_dataloader):
                 imgs, task_ids, class_ids = imgs.to(self.config.device), task_ids.to(self.config.device), class_ids.to(self.config.device)
-
                 self.optimizer_router.zero_grad()
                 self.optimizer_modular.zero_grad()
 
@@ -203,7 +199,6 @@ class Trainer:
                 #print("self.args.temperature", self.args.temperature)
                 y_preds, router_outs, logits, action_masks = self.lrn_model(
                     imgs, task_ids, temperature=self.temperature)
-                # print("logits", logits)
 
                 disc_preds = self.disc.predict(task_ids, logits.softmax(dim=2)).detach()[:, :-1] #* (1-action_masks)
                 #print("router_outs", router_outs)
@@ -227,8 +222,8 @@ class Trainer:
 
 
                 loss = self.loss_fn(y_preds, class_ids)
-                
-                total_loss = loss - self.args.entropy_lam * router_entropy_loss
+                param_entropy_loss = compute_entropy_loss(self.config, logits * (1-action_masks))
+                total_loss = loss - self.args.cond_entropy_lam * torch.clamp_max(router_entropy_loss, 100)  + self.args.entropy_lam * param_entropy_loss 
                 total_loss.backward()
                 self.optimizer_modular.step()
                 self.optimizer_router.step()
@@ -236,7 +231,7 @@ class Trainer:
                 self.optimizer_disc.zero_grad()
                 old_disc_tgts = logits.detach().clone()
                 disc_seq, disc_seq_lens, disc_tgts, disc_data_idxs, disc_task_ids = create_disc_train_data(task_ids, logits.detach().softmax(dim=2), self.config)
-                disc_preds = self.disc(disc_task_ids, disc_seq, disc_seq_lens, disc_data_idxs) #* (1-action_masks)
+                disc_preds = self.disc(disc_task_ids, disc_seq, disc_seq_lens, disc_data_idxs)
 
                 
                 # print("DISC SHAPES", disc_preds.shape, disc_tgts.shape)
@@ -285,6 +280,7 @@ class Trainer:
                     print("LRN loss", loss)
                     print("entropy_loss", entropy_loss)
                     print("router_entropy_loss", router_entropy_loss)
+                    print("param_entropy_loss", param_entropy_loss)
                     print("self.temperature", self.temperature)
                     
                 # plt.imshow(imgs[0, 0].detach().cpu())
