@@ -105,7 +105,8 @@ class Router(nn.Module):
 
         cur_loss = None
         router_outs = torch.zeros(batch_size, self.config.routing_depth, self.config.num_modules, device=self.config.device)
-        logits = torch.zeros(batch_size, self.config.routing_depth, self.config.num_modules, device=self.config.device)
+        logits = torch.tensor([-1e9], device=self.config.device).repeat(batch_size, self.config.routing_depth, self.config.num_modules)
+
         actions = [[] for _ in range(batch_size)]
         
         

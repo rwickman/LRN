@@ -77,7 +77,16 @@ class Trainer:
 
         if self.args.load:
             self.load()
-    
+
+    def adjust_lr(self):
+        if self.train_dict["num_steps"] < self.args.warm_up_steps:
+            inter_step = self.train_dict["num_steps"] / self.args.warm_up_steps
+            print("LR", (1-inter_step) * self.args.warm_up_lr + inter_step * self.args.router_lr)
+            self.optimizer_router.param_groups[0]["lr"] = (1-inter_step) * self.args.warm_up_lr + inter_step * self.args.router_lr
+        else:
+            self.optimizer_router.param_groups[0]["lr"] = lr
+
+
     def save(self):
         print("SAVING MODEL")
         model_dict = {
@@ -191,6 +200,7 @@ class Trainer:
 
 
             for imgs, task_ids, class_ids in tqdm(self.train_dataloader):
+                self.adjust_lr()
                 imgs, task_ids, class_ids = imgs.to(self.config.device), task_ids.to(self.config.device), class_ids.to(self.config.device)
                 self.optimizer_router.zero_grad()
                 self.optimizer_modular.zero_grad()
@@ -201,13 +211,9 @@ class Trainer:
                     imgs, task_ids, temperature=self.temperature)
 
                 disc_preds = self.disc.predict(task_ids, logits.softmax(dim=2)).detach()[:, :-1] #* (1-action_masks)
-                #print("router_outs", router_outs)
                 temp_logits = logits.view(-1, logits.shape[2])
-                #print("disc_preds", disc_preds)
                 disc_preds = disc_preds.argmax(dim=2)
-                # print("LOGITS", temp_logits)
-                # print("ARGMAX disc_preds", disc_preds)
-                # print("disc_preds", disc_preds.shape, temp_logits.shape)
+
                 router_entropy_loss = self.loss_fn(
                     temp_logits,
                     disc_preds.view(-1))
@@ -222,7 +228,7 @@ class Trainer:
 
 
                 loss = self.loss_fn(y_preds, class_ids)
-                param_entropy_loss = compute_entropy_loss(self.config, logits * (1-action_masks))
+                param_entropy_loss = compute_entropy_loss(self.config, logits)
                 total_loss = loss - self.args.cond_entropy_lam * torch.clamp_max(router_entropy_loss, 100)  + self.args.entropy_lam * param_entropy_loss 
                 total_loss.backward()
                 self.optimizer_modular.step()

@@ -1,4 +1,5 @@
 import argparse
+import os
 
 # from configs.omniglot import mixed_config
 from configs.omniglot import mixed_config, mixed_config_only_conv, mixed_config_only_conv_any_layer 
@@ -9,6 +10,9 @@ from taskrouter.benchmark import BenchmarkTrainer
 
 import torch
 def main(args):
+    if not os.path.exists(args.save_dir):
+        os.mkdir(args.save_dir)
+
     #module_trainer = Trainer(args, mixed_config)
     if args.any_layer:
         config = mixed_config_only_conv_any_layer
@@ -101,7 +105,11 @@ if __name__ == "__main__":
         help="Max probability for module.")
     hyper_args.add_argument("--min_prob", type=float, default=0.0,
         help="Min probability for module.")
-        
+    hyper_args.add_argument("--warm_up_steps", type=int, default=2080,
+        help="Number of epochs for warmup .")
+    hyper_args.add_argument("--warm_up_lr", type=float, default=1e-7,
+        help="Number of epochs for warmup .")
+
     hyper_args.add_argument("--entropy_lam", type=float, default=0.1,
         help="Entropy lambda.")        
     hyper_args.add_argument("--cond_entropy_lam", type=float, default=0.1,

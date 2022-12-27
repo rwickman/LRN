@@ -127,9 +127,6 @@ class ModuleBlockModel(nn.Module):
 
         self._max_out_size = max(config.out_sizes)
         self._init_layers()
-        
-
-        #self.create_mb_probs()
 
     def _init_layers(self):
         out_layers = []
@@ -156,7 +153,7 @@ class ModuleBlockModel(nn.Module):
                 nn.Linear(out_in_size, self.config.out_sizes[i])
             )
         
-        self._dropout = nn.Dropout(0.10)
+        self._dropout = nn.Dropout(self.args.drop_rate)
 
         self._mbs = nn.ModuleList(mbs)
         self._group_norm_out = nn.GroupNorm(4, num_channels=48)
@@ -178,8 +175,9 @@ class ModuleBlockModel(nn.Module):
             a Tensor of outputs
         """
         batch_size = x.shape[0]
-        y = torch.zeros(batch_size, self._max_out_size, device=self.config.device)
-
+        #y = torch.zeros(batch_size, self._max_out_size, device=self.config.device)
+        y = torch.tensor([-1e9], device=self.config.device).repeat(batch_size, self._max_out_size)
+        
         for i in range(batch_size):
             cur_x = x[i:i+1]
             actions = router_outs[i].nonzero()[:, 1].flatten()
