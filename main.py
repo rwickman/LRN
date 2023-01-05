@@ -3,8 +3,8 @@ import os
 
 # from configs.omniglot import mixed_config
 from configs.omniglot import mixed_config, mixed_config_only_conv, mixed_config_only_conv_any_layer 
-
-
+from taskrouter.helpers.data_loader import load_omniglot, load_cifar
+from configs.cifar import cifar_config
 from taskrouter.trainer import Trainer
 from taskrouter.benchmark import BenchmarkTrainer
 
@@ -24,7 +24,14 @@ def main(args):
     if args.benchmark:
         trainer = BenchmarkTrainer(args, mixed_config)        
     else:
-        trainer = Trainer(args, config)
+        if args.dataset == "omniglot":
+            train_dataset, val_dataset, test_dataset, out_sizes = load_omniglot()
+            config.out_sizes = out_sizes
+            trainer = Trainer(args, config, train_dataset, val_dataset, test_dataset)
+        elif args.dataset == "cifar":
+            config = cifar_config
+            train_dataset, test_dataset = load_cifar()
+            trainer = Trainer(args, config, train_dataset, test_dataset)
 
     if args.test:
         trainer.test()
@@ -39,11 +46,13 @@ if __name__ == "__main__":
         help="Load prior progress.")
     general_args.add_argument("--save_dir", default="model",
         help="Directory to save models.")
+    general_args.add_argument("--dataset", default="omniglot",
+        help="Dataset to train on.")
+
     general_args.add_argument("--benchmark", action="store_true",
         help="Train benchmark.")
     general_args.add_argument("--benchmark_model", default="3x3",
         help="The benchmark model to run.")
-    
     general_args.add_argument("--test", action="store_true",
         help="Test model on testing set.")
 
@@ -71,7 +80,8 @@ if __name__ == "__main__":
         help="Only use convolutional layers for modules.")
     router_args.add_argument("--any_layer", action="store_true",
         help="Modules can be used at any layer where applicable.")
-
+    router_args.add_argument("--decoder", action="store_true",
+        help="Apply transformer decoder mask.")
 
     disc_args = parser.add_argument_group("Discriminator")
     disc_args.add_argument("--disc_enc_layers", type=int, default=6,
@@ -90,31 +100,33 @@ if __name__ == "__main__":
         help="Modules learning rate.")
     hyper_args.add_argument("--router_lr", type=float, default=2e-4,
         help="Router learning rate.")
-    hyper_args.add_argument("--batch_size", type=int, default=32,
+    hyper_args.add_argument("--batch_size", type=int, default=64,
         help="Batch size.")
     hyper_args.add_argument("--epochs", type=int, default=100,
         help="Number of epochs to train the model.")
 
-    hyper_args.add_argument("--min_temperature", type=float, default=1.0,
+    hyper_args.add_argument("--min_temperature", type=float, default=0.5,
         help="Temperature to use for router.")    
     hyper_args.add_argument("--temperature", type=float, default=5.0,
         help="Temperature to use for router.")
     hyper_args.add_argument("--temp_decay_steps", type=int, default=10000,
-        help="Temperature to use for router.")
+        help="Number of steps before temperature decays to min_temperature.")
     hyper_args.add_argument("--max_prob", type=float, default=0.5,
         help="Max probability for module.")
     hyper_args.add_argument("--min_prob", type=float, default=0.0,
         help="Min probability for module.")
-    hyper_args.add_argument("--warm_up_steps", type=int, default=2080,
+    hyper_args.add_argument("--warm_up_steps", type=int, default=0,
         help="Number of epochs for warmup .")
     hyper_args.add_argument("--warm_up_lr", type=float, default=1e-7,
         help="Number of epochs for warmup .")
-
-    hyper_args.add_argument("--entropy_lam", type=float, default=0.1,
-        help="Entropy lambda.")        
-    hyper_args.add_argument("--cond_entropy_lam", type=float, default=0.1,
+    hyper_args.add_argument("--weight_decay", type=float, default=0.003,
+        help="Number of epochs for warmup .")
+    hyper_args.add_argument("--entropy_lam", type=float, default=0.01,
+        help="Entropy lambda.")  
+    hyper_args.add_argument("--cv_lam", type=float, default=0.1,
         help="Entropy lambda.")      
-
+    hyper_args.add_argument("--lr_decay", type=float, default=0.995,
+        help="Decay value for learning rate.")      
 
 
     main(parser.parse_args())

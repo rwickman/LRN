@@ -2,6 +2,7 @@ import os
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
+import torchvision.datasets as tv_ds 
 from PIL import Image
 import numpy as np
 import random
@@ -66,7 +67,7 @@ class OmniglotDataset(Dataset):
 
 def load_omniglot():
     print("LOADING OMNIGLOT")
-    omniglot_dir = "D:\Pictures\datasets\omniglot\images_background\images_background"
+    omniglot_dir = "/media/data/datasets/omniglot/multitask"
 
     langs = os.listdir(omniglot_dir)
 
@@ -122,3 +123,28 @@ def load_omniglot():
     test_dataset = OmniglotDataset(dataset_files_test, task_ids_test, class_ids_test)
 
     return train_dataset, val_dataset, test_dataset, out_sizes
+
+
+
+class CIFARDataset(Dataset):
+    def __init__(self, train=True):
+        self.dataset = tv_ds.CIFAR100(
+            './data', train=train, download=True, transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
+
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        img, class_id = self.dataset[idx]
+        task_id = class_id // 5
+        fine_label = class_id % 5
+        return img, task_id, fine_label
+
+
+
+def load_cifar():
+    train_ds = CIFARDataset()
+    test_ds = CIFARDataset(False)
+    return train_ds, test_ds

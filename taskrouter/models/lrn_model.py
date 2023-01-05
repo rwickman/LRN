@@ -4,15 +4,19 @@ import torch.nn as nn
 
 from taskrouter.models.router import Router
 from taskrouter.modules.mb_model import ModuleBlockModel
+from taskrouter.modules.mb_model_cifar import ModuleBlockModelCIFAR
 
 
 class LRNModel(nn.Module):
     def __init__(self, args, config):
         super().__init__()
-        self.router_model = Router(args, config).train()
+        self.router_model = Router(args, config)
         print("Number of Router parameters: ", sum(p.numel() for p in self.router_model.parameters() if p.requires_grad))
+        if args.dataset == "cifar":
+            self.modular_model = ModuleBlockModelCIFAR(args, config)
+        else:
+            self.modular_model = ModuleBlockModel(args, config)
 
-        self.modular_model = ModuleBlockModel(args, config).train()
         print("Number of Modular parameters: ", sum(p.numel() for p in self.modular_model.parameters() if p.requires_grad))
     
     def forward(self, x, task_ids, temperature=5.0, argmax=False):

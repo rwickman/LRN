@@ -1,5 +1,14 @@
+import torch
 import torch.nn as nn 
 import torchvision.models as torch_models
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
+
+def src_mask(sz):
+    mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+    return mask
+
 
 class TransformerEncoder(nn.Module):
     def __init__(self, args):
@@ -12,7 +21,8 @@ class TransformerEncoder(nn.Module):
                 activation="gelu",
                 nhead=self.args.num_heads,
                 dropout=self.args.drop_rate,
-                batch_first=True)
+                batch_first=True,
+                norm_first=True)
 
         self.enc_1 = nn.TransformerEncoder(enc_layer, self.args.num_enc_layers)
 
@@ -21,7 +31,9 @@ class TransformerEncoder(nn.Module):
         """
             x: task emb, example emb, used mbs embs
         """
-        x = self.enc_1(x)
+        mask = src_mask(x.shape[1]).to("cuda")
+        mask[0, 1] = 0
+        x = self.enc_1(x, mask)
         
         return x
 
@@ -47,14 +59,28 @@ class PatchEncoder(nn.Module):
         patches = self.to_patch_embedding(imgs)
         return patches
 
-
 class ImageEncoder(nn.Module):
     def __init__(self, args, config):
         super().__init__()
         self.args = args
         self.config = config
-        self.model = torch_models.mobilenet_v3_small(True)
-        self.model.features[0][0] = nn.Conv2d(1, 16, 3, stride=2, padding=1)
+        
+
+        # self.model = nn.Sequential(
+        #     nn.Conv2d(self.config.in_channels, 64, 8, stride=4, padding=0),
+        #     nn.LeakyReLU(inplace=True),
+        #     nn.Conv2d(64, 128, 3, stride=2, padding=0),
+        #     nn.LeakyReLU(inplace=True),
+        #     nn.Conv2d(128, 512, 3, stride=1, padding=0),
+        #     nn.LeakyReLU(inplace=True),
+        #     nn.AdaptiveAvgPool2d(1),
+        #     nn.Flatten(),
+        #     nn.Linear(512, self.args.emb_size),
+        #     nn.Tanh()
+        # )
+        self.model = torch_models.mobilenet_v3_small()
+        if self.config.in_channels != 3:
+            self.model.features[0][0] = nn.Conv2d(1, 16, 3, stride=2, padding=1)
         self.model.classifier[3] = nn.Linear(self.model.classifier[3].in_features, self.args.emb_size)
 
     def forward(self, x):
