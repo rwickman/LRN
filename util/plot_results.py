@@ -5,7 +5,7 @@ import numpy as np
 
 sns.set(style="darkgrid")
 
-train_dict_file = "train_models/cifar_only_fc/models_balcvloss01_mintemp0001_tempdecay58500_normfirst_warmup1500_dup20_lr1e4_routerlr1e4_stable_tanh/train_dict.json"
+train_dict_file = "train_models/cifar_only_fc/models_balcvloss01_mintemp0001_tempdecay58500_normfirst_warmup1500_dup20_lr1e4_routerlr1e4_tanh/train_dict.json"
 
 with open(train_dict_file) as f:
     train_dict = json.load(f)

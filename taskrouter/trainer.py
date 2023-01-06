@@ -248,11 +248,13 @@ class Trainer:
                 else:
                     print("state_encoder grad", self.lrn_model.router_model.state_encoder.model.features[0][0].weight.grad.min().item(), self.lrn_model.router_model.state_encoder.model.features[0][0].weight.grad.max().item())
                     
-                    #print("state_encoder grad", self.lrn_model.router_model.state_encoder.model[-2].weight.grad.min().item(), self.lrn_model.router_model.state_encoder.model[-2].weight.grad.max().item())
+                    
                 for i in range(self.args.num_enc_layers):
-                    print(f"enc.layers[{i}].ff[0]", self.lrn_model.router_model.trans_router.encoder[0].ff.ff[0].weight.grad.min().item(), self.lrn_model.router_model.trans_router.encoder[0].ff.ff[-2].weight.grad.max().item())
-                    print(f"enc.layers[{i}].ff[-2]", self.lrn_model.router_model.trans_router.encoder[0].ff.ff[-2].weight.grad.min().item(), self.lrn_model.router_model.trans_router.encoder[0].ff.ff[-2].weight.grad.max().item())
-           
+                    #print(f"enc.layers[{i}].ff[0]", self.lrn_model.router_model.trans_router.encoder[0].ff.ff[0].weight.grad.min().item(), self.lrn_model.router_model.trans_router.encoder[0].ff.ff[-2].weight.grad.max().item())
+                    #print(f"enc.layers[{i}].ff[-2]", self.lrn_model.router_model.trans_router.encoder[0].ff.ff[-2].weight.grad.min().item(), self.lrn_model.router_model.trans_router.encoder[0].ff.ff[-2].weight.grad.max().item())
+                    print(f"enc_layer {i} linear1", self.lrn_model.router_model.trans_router.encoder.enc.layers[i].linear1.weight.grad.min().item(), self.lrn_model.router_model.trans_router.encoder.enc.layers[i].linear1.weight.grad.max().item())
+                    print(f"enc_layer {i} linear2", self.lrn_model.router_model.trans_router.encoder.enc.layers[i].linear2.weight.grad.min().item(), self.lrn_model.router_model.trans_router.encoder.enc.layers[i].linear2.weight.grad.max().item())
+                    
                 print("LRN loss", loss)
                 print("bal_cv_loss", bal_cv_loss)
 
@@ -277,9 +279,9 @@ class Trainer:
 
         self.train_dict["train_modules"].append(modules.tolist())
         self.train_dict["num_epochs"] += 1
-        self.validate()
-        self.save()
         val_acc, val_loss = self.validate()
+
+        self.save()
 
         return train_loss, bal_cv_loss, val_acc, val_loss
         

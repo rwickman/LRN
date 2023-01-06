@@ -44,18 +44,24 @@ class SimpleConvNetBlock(nn.Module):
 #     return mbs
 
 
-def default_group(num_dup, in_channels, out_channels, stride=1, only_conv=False):
+def default_group(num_dup, in_channels, out_channels, stride=1, t=0):
     mbs = []
     for _ in range(num_dup):
-        mbs.append(
-            ModuleBlock(
-                nn.Sequential(
-                    nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
-                    nn.ReLU(inplace=True),
-                    nn.MaxPool2d(2))))
-            #     nn.BatchNorm2d(out_channels),
-            #     nn.Sequential(nn.ReLU(inplace=True), nn.MaxPool2d(2))
-            # ))    
+        if t == 3:
+            mbs.append(
+                ModuleBlock(
+                    nn.Sequential(
+                        nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+                        nn.ReLU(inplace=True),
+                        nn.MaxPool2d(2),
+                        nn.Flatten())))
+        else:
+            mbs.append(
+                ModuleBlock(
+                    nn.Sequential(
+                        nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+                        nn.ReLU(inplace=True),
+                        nn.MaxPool2d(2))))
 
 
     return mbs
@@ -90,20 +96,22 @@ class ModuleBlockModelCIFAR(nn.Module):
         mbs = []
 
         # Add the routed conv layers
-        # for i, stride in enumerate(self.config.strides):
-        #     if i == 0:
-        #         in_channels = 3
-        #     else:
-        #         in_channels = 32
-
-        #     mbs.extend(
-        #         default_group(self.config.unique_hidden_modules, in_channels, 32, stride=stride))
-        self.shared_inp = nn.Sequential(
-            SimpleConvNetBlock(self.config.in_channels, 32, 3),
-            SimpleConvNetBlock(32, 32, 3),
-            SimpleConvNetBlock(32, 32, 3),
-            SimpleConvNetBlock(32, 32, 3),
-            nn.Flatten())
+        
+        if self.args.all_layers:
+            for i, stride in enumerate(self.config.strides):
+                if i == 0:
+                    in_channels = 3
+                else:
+                    in_channels = 32
+                mbs.extend(
+                    default_group(self.config.unique_hidden_modules, in_channels, 32, stride=stride, t=i))
+        else:
+            self.shared_inp = nn.Sequential(
+                SimpleConvNetBlock(self.config.in_channels, 32, 3),
+                SimpleConvNetBlock(32, 32, 3),
+                SimpleConvNetBlock(32, 32, 3),
+                SimpleConvNetBlock(32, 32, 3),
+                nn.Flatten())
 
         # Add the routed FC layers
         mbs.extend(
@@ -131,18 +139,16 @@ class ModuleBlockModelCIFAR(nn.Module):
         batch_size = x.shape[0]
         #y = torch.zeros(batch_size, self._max_out_size, device=self.config.device)
         y = torch.tensor([-1e9], device=self.config.device).repeat(batch_size, self.config.out_size)
-        x = self.shared_inp(x)
-        for i in range(batch_size):
-            
+        if not self.args.all_layers:
+            x = self.shared_inp(x)
+        
+        for i in range(batch_size):    
             cur_x = x[i:i+1]
             actions = router_outs[i].nonzero()[:, 1].flatten()
             #print("actions", task_ids[i], actions)
             for t, a_t in enumerate(actions):    
-                #cur_x = cur_x.view(cur_x.shape[0], self.config.conv_out_size)
                 cur_x = self._mbs[a_t](cur_x) * router_outs[i][t][a_t]
-                 
-
-            #cur_x = cur_x.view(1, -1)
+            
             y[i] = cur_x
 
         return y

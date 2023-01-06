@@ -11,7 +11,11 @@ class HyperparameterTuner:
         self.test_dataset = test_dataset
         
         self.models_path = f"models/{self.args.dataset}"
-        self.project = f"{self.args.dataset}-lrn"
+        if self.args.all_layers:
+            self.project = f"{self.args.dataset}-all_layers-lrn"
+        else:
+            self.project = f"{self.args.dataset}-lrn"
+
         if not os.path.exists(self.models_path):
             os.makedirs(self.models_path)
 
@@ -30,6 +34,7 @@ class HyperparameterTuner:
         self.args.min_temperature = wandb.config.min_temperature
         self.args.temp_decay_steps = int(wandb.config.temp_decay_steps)
         self.args.batch_size = wandb.config.batch_size
+        self.args.temperatue = wandb.config.temperatue
         trainer = Trainer(self.args, self.config, self.train_dataset, self.val_dataset, self.test_dataset)
         epochs = wandb.config.epochs
         
@@ -57,7 +62,8 @@ class HyperparameterTuner:
                 'num_enc_layers': {'values': [1, 2, 3, 4, 5, 6]},
                 'min_temperature': {'max': 1.0, 'min': 0.001},
                 'temp_decay_steps': {'max': 100000, 'min': 10000},
-                'batch_size': {'values': [32, 64, 128]}
+                'batch_size': {'values': [32, 64, 128]},
+                'temperatue': {'max': 20.0, 'min': 5.0}
             }
         }
 

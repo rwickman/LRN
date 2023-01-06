@@ -24,16 +24,20 @@ class TransformerEncoder(nn.Module):
                 batch_first=True,
                 norm_first=True)
 
-        self.enc_1 = nn.TransformerEncoder(enc_layer, self.args.num_enc_layers)
+        self.enc = nn.TransformerEncoder(enc_layer, self.args.num_enc_layers)
 
 
     def forward(self, x):
         """
             x: task emb, example emb, used mbs embs
         """
-        mask = src_mask(x.shape[1]).to("cuda")
-        mask[0, 1] = 0
-        x = self.enc_1(x, mask)
+        if self.args.decoder:
+            mask = src_mask(x.shape[1]).to("cuda")
+            mask[0, 1] = 0
+            x = self.enc(x, mask)
+        else:
+            x = self.enc(x)
+        
         
         return x
 

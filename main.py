@@ -4,7 +4,7 @@ import os
 # from configs.omniglot import mixed_config
 from configs.omniglot import mixed_config, mixed_config_only_conv, mixed_config_only_conv_any_layer 
 from taskrouter.helpers.data_loader import load_omniglot, load_cifar
-from configs.cifar import cifar_config
+from configs.cifar import cifar_config, cifar_config_all_layers
 from taskrouter.trainer import Trainer
 from taskrouter.benchmark import BenchmarkTrainer
 
@@ -17,22 +17,27 @@ def main(args):
         os.mkdir(args.save_dir)
 
     #module_trainer = Trainer(args, mixed_config)
-    if args.any_layer:
-        config = mixed_config_only_conv_any_layer
-    elif args.only_conv:
-        config = mixed_config_only_conv
-    else:
-        config = mixed_config
+    # if args.any_layer:
+    #     config = mixed_config_only_conv_any_layer
+    # elif args.only_conv:
+    #     config = mixed_config_only_conv
+    # else:
+        
 
     if args.benchmark:
         trainer = BenchmarkTrainer(args, mixed_config)        
     else:
         if args.dataset == "omniglot":
+            config = mixed_config
             train_dataset, val_dataset, test_dataset, out_sizes = load_omniglot()
             config.out_sizes = out_sizes
             trainer = Trainer(args, config, train_dataset, val_dataset, test_dataset)
         elif args.dataset == "cifar":
-            config = cifar_config
+            if args.all_layers:
+                config = cifar_config_all_layers
+            else:
+                config = cifar_config
+
             train_dataset, val_dataset = load_cifar()
             test_dataset = None 
             if not args.hyperparameter_tune:
@@ -46,8 +51,8 @@ def main(args):
             tuner = HyperparameterTuner(args, config, train_dataset, val_dataset, test_dataset)
             tuner.start()
         else:
-            trainer.setup()
             for epoch in range(args.epochs):
+                print(f"RUNNING EPOCH {epoch}")
                 train_loss, bal_cv_loss, val_acc, val_loss = trainer.train()
 
             
@@ -97,6 +102,8 @@ if __name__ == "__main__":
         help="Only use convolutional layers for modules.")
     router_args.add_argument("--any_layer", action="store_true",
         help="Modules can be used at any layer where applicable.")
+    router_args.add_argument("--all_layers", action="store_true",
+        help="Perform routing on every layer.")
     router_args.add_argument("--decoder", action="store_true",
         help="Apply transformer decoder mask.")
     
@@ -110,7 +117,7 @@ if __name__ == "__main__":
     hyper_args.add_argument("--epochs", type=int, default=100,
         help="Number of epochs to train the model.")
 
-    hyper_args.add_argument("--min_temperature", type=float, default=0.5,
+    hyper_args.add_argument("--min_temperature", type=float, default=0.01,
         help="Temperature to use for router.")    
     hyper_args.add_argument("--temperature", type=float, default=5.0,
         help="Temperature to use for router.")
@@ -120,7 +127,7 @@ if __name__ == "__main__":
         help="Max probability for module.")
     hyper_args.add_argument("--min_prob", type=float, default=0.0,
         help="Min probability for module.")
-    hyper_args.add_argument("--warm_up_steps", type=int, default=0,
+    hyper_args.add_argument("--warm_up_steps", type=int, default=5000,
         help="Number of epochs for warmup .")
     hyper_args.add_argument("--warm_up_lr", type=float, default=1e-7,
         help="Number of epochs for warmup .")
