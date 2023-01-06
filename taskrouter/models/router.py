@@ -60,9 +60,10 @@ class Router(nn.Module):
         super().__init__()
         self.args = args
         self.config = config
-        
-        self.trans_router = StableTransformer(self.args, self.config)
-        #self.trans_router = TransformerRouter(self.args, self.config)
+        if self.args.use_stable:
+            self.trans_router = StableTransformer(self.args, self.config)
+        else:
+            self.trans_router = TransformerRouter(self.args, self.config)
         self.mb_embs = nn.Embedding(self.config.num_modules, self.args.emb_size)
 
         self.task_embs = nn.Embedding(self.config.num_tasks, self.args.emb_size)

@@ -12,9 +12,13 @@ class HyperparameterTuner:
         
         self.models_path = f"models/{self.args.dataset}"
         if self.args.all_layers:
-            self.project = f"{self.args.dataset}-all_layers-lrn"
+            self.project = f"{self.args.dataset}_all_layers-lrn"
         else:
             self.project = f"{self.args.dataset}-lrn"
+
+        if self.args.use_stable:
+            self.project += "-stable"
+
 
         if not os.path.exists(self.models_path):
             os.makedirs(self.models_path)

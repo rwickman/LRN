@@ -107,5 +107,5 @@ class StableTransformer(nn.Module):
         # Apply masks over invalid actions
         if action_mask is not None:
             mb_logits += action_mask * -1e9
-        # print("mb_logits", mb_logits[0])
+
         return mb_logits
