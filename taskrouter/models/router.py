@@ -206,7 +206,7 @@ class Router(nn.Module):
                 mb_choice = torch.zeros_like(mb_logits, device=self.config.device)
                 mb_choice[torch.arange(mb_logits.shape[0]), mb_logits.argmax(dim=-1)] = 1
             else:
-                mb_choice = F.gumbel_softmax(mb_logits/temperature, tau=temperature, hard=True)
+                mb_choice = F.gumbel_softmax(mb_logits, tau=temperature, hard=True)
 
             # Iterate over choices in a batch
             for b_i in range(batch_size):

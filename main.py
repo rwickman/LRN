@@ -9,6 +9,9 @@ from taskrouter.trainer import Trainer
 from taskrouter.benchmark import BenchmarkTrainer
 
 import torch
+from wandb_sweep import HyperparameterTuner
+
+
 def main(args):
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
@@ -30,13 +33,24 @@ def main(args):
             trainer = Trainer(args, config, train_dataset, val_dataset, test_dataset)
         elif args.dataset == "cifar":
             config = cifar_config
-            train_dataset, test_dataset = load_cifar()
-            trainer = Trainer(args, config, train_dataset, test_dataset)
+            train_dataset, val_dataset = load_cifar()
+            test_dataset = None 
+            if not args.hyperparameter_tune:
+                trainer = Trainer(args, config, train_dataset, val_dataset)
 
     if args.test:
         trainer.test()
     else:
-        trainer.train()
+        if args.hyperparameter_tune:
+            # Perform hyperparameter tuning
+            tuner = HyperparameterTuner(args, config, train_dataset, val_dataset, test_dataset)
+            tuner.start()
+        else:
+            trainer.setup()
+            for epoch in range(args.epochs):
+                train_loss, bal_cv_loss, val_acc, val_loss = trainer.train()
+
+            
 
 
 if __name__ == "__main__":
@@ -55,7 +69,10 @@ if __name__ == "__main__":
         help="The benchmark model to run.")
     general_args.add_argument("--test", action="store_true",
         help="Test model on testing set.")
-
+    general_args.add_argument("--hyperparameter_tune", action="store_true",
+        help="Use W&B to perform hyperparameter tuning.")
+    general_args.add_argument("--debug", action="store_true",
+        help="Print out debug info while training.")
 
     router_args = parser.add_argument_group("Router Parameters")
     router_args.add_argument("--emb_size", type=int, default=512,
@@ -82,18 +99,6 @@ if __name__ == "__main__":
         help="Modules can be used at any layer where applicable.")
     router_args.add_argument("--decoder", action="store_true",
         help="Apply transformer decoder mask.")
-
-    disc_args = parser.add_argument_group("Discriminator")
-    disc_args.add_argument("--disc_enc_layers", type=int, default=6,
-        help="Number of transformer encoder layers")
-    disc_args.add_argument("--disc_dff", type=int, default=2048,
-        help="DFF size for discriminator")
-    disc_args.add_argument("--disc_num_heads", type=int, default=8,
-        help="DFF size for discriminator")
-    disc_args.add_argument("--disc_num_enc_layers", type=int, default=8,
-        help="DFF size for discriminator")
-    disc_args.add_argument("--disc_lr", type=float, default=1e-3,
-        help="DFF size for discriminator")
     
     hyper_args = parser.add_argument_group("HyperParameters")
     hyper_args.add_argument("--lr", type=float, default=2e-4,
@@ -125,7 +130,7 @@ if __name__ == "__main__":
         help="Entropy lambda.")  
     hyper_args.add_argument("--cv_lam", type=float, default=0.1,
         help="Entropy lambda.")      
-    hyper_args.add_argument("--lr_decay", type=float, default=0.995,
+    hyper_args.add_argument("--lr_decay", type=float, default=0.999,
         help="Decay value for learning rate.")      
 
 

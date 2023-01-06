@@ -78,7 +78,7 @@ class ImageEncoder(nn.Module):
         #     nn.Linear(512, self.args.emb_size),
         #     nn.Tanh()
         # )
-        self.model = torch_models.mobilenet_v3_small()
+        self.model = torch_models.mobilenet_v3_small(True)
         if self.config.in_channels != 3:
             self.model.features[0][0] = nn.Conv2d(1, 16, 3, stride=2, padding=1)
         self.model.classifier[3] = nn.Linear(self.model.classifier[3].in_features, self.args.emb_size)

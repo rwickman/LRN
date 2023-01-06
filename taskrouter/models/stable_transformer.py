@@ -43,8 +43,8 @@ class StableTransformerLayer(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.gate1 = GatingMechanism(args.emb_size)
-        self.gate2 = GatingMechanism(args.emb_size)
+        self.gate1 = GatingMechanism(args.emb_size, bg=0)
+        self.gate2 = GatingMechanism(args.emb_size, bg=0)
         self.mha = nn.MultiheadAttention(
             args.emb_size, args.num_heads, args.drop_rate, batch_first=True)
         self.ff = Feedforward(args)
@@ -62,7 +62,7 @@ class StableTransformerLayer(nn.Module):
             mask = None
 
         y_bar, att = self.mha(y_bar, y_bar, y_bar, attn_mask=mask)
-        #print("att", att.shape, att[0:2])
+        # print("att", att.shape, att[0:2])
         y = self.gate1(E, self.act(y_bar))
         E_bar = self.ff(self.norm2(y))
         E_next = self.gate2(y, self.act(E_bar))
@@ -89,19 +89,20 @@ class StableTransformer(nn.Module):
     #             module.bias.data.normal_(mean=0.0, std=0.001)
     #     elif isinstance(module, nn.LayerNorm):
     #         module.bias.data.normal_(mean=0.0, std=0.001)
-    #         #module.weight.data.normal_(mean=0.0, std=0.02)
+            #module.weight.data.normal_(mean=0.0, std=0.02)
 
     def forward(self, state, action_mask=None, mask=None):
-        #state = torch.tanh(state)
+        # state = torch.tanh(state)
         
 
         # print("IMG STATS", state[:, 0].min(), state[:, 0].max(), state[:, 0].mean())
         # print("TASK EMB STATS", state[:, 1].min(), state[:, 1].max(), state[:, 1].mean())
+
         # print("POS EMB STATS", self.pos_encoding.min(), self.pos_encoding.max(), self.pos_encoding.mean())
         # print("self.pos_encoding[:, 1, 0:10]", self.pos_encoding[:, 1, 0:10])
         # Add position encoding to state
         state_pos = torch.tanh(state + self.pos_encoding[:, :state.shape[1]])
-        #state_pos = state + self.pos_encoding[:, :state.shape[1]]
+        # state_pos = state + self.pos_encoding[:, :state.shape[1]] * 0.0001
 
  
 
@@ -119,5 +120,5 @@ class StableTransformer(nn.Module):
         # Apply masks over invalid actions
         if action_mask is not None:
             mb_logits += action_mask * -1e9
-
+        # print("mb_logits", mb_logits[0])
         return mb_logits

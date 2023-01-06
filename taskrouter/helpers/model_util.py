@@ -9,7 +9,16 @@ def src_mask(sz):
     mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
     mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
     return mask
-    
+
+def mb_dropout(mb_logits, drop_rate):
+    if drop_rate > 0:
+        rand_drop = (torch.rand_like(mb_logits) <= drop_rate).int() *  -1e9
+        mb_logits += rand_drop
+
+    return mb_logits 
+
+
+
 class EntropyLoss(nn.Module):
     def __init__(self):
         super().__init__()
