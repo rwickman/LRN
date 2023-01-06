@@ -1,4 +1,9 @@
 # TaskRouter
+First, you need to install this package:
+```shell
+pip install -e .
+```
+
 ## Running CIFAR-MTL hyperparameter tuning
 If you want to route all layers:
 ```shell
