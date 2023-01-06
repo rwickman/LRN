@@ -78,6 +78,8 @@ if __name__ == "__main__":
         help="Use W&B to perform hyperparameter tuning.")
     general_args.add_argument("--debug", action="store_true",
         help="Print out debug info while training.")
+    general_args.add_argument("--use_stable", action="store_true",
+        help="Use stable transformer.")
 
     router_args = parser.add_argument_group("Router Parameters")
     router_args.add_argument("--emb_size", type=int, default=512,
