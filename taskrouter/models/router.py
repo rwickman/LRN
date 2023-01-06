@@ -60,7 +60,7 @@ class Router(nn.Module):
         super().__init__()
         self.args = args
         self.config = config
-        if self.args.use_stable:
+        if self.args.no_stable:
             self.trans_router = StableTransformer(self.args, self.config)
         else:
             self.trans_router = TransformerRouter(self.args, self.config)

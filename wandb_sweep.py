@@ -16,7 +16,7 @@ class HyperparameterTuner:
         else:
             self.project = f"{self.args.dataset}-lrn"
 
-        if self.args.use_stable:
+        if not self.args.no_stable:
             self.project += "-stable"
 
 
