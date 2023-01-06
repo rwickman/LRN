@@ -238,8 +238,8 @@ class Trainer:
                 print("modules", modules.tolist())
                 #print("modular_model", self.lrn_model.modular_model._mbs[0].layer.weight.grad.min(), self.lrn_model.modular_model._mbs[0].layer.weight.grad.max())
                 print("task_embs grad", self.lrn_model.router_model.task_embs.weight.grad.min().item(), self.lrn_model.router_model.task_embs.weight.grad.max().item())
-                print("pos_embs grad", self.lrn_model.router_model.trans_router.pos_encoding.grad.min().item(), self.lrn_model.router_model.trans_router.pos_encoding.grad.max().item())
-                print("pos_encoding[:, 1, 0:10]", self.lrn_model.router_model.trans_router.pos_encoding[:, 1, 0:10])
+                #print("pos_embs grad", self.lrn_model.router_model.trans_router.pos_encoding.grad.min().item(), self.lrn_model.router_model.trans_router.pos_encoding.grad.max().item())
+                #print("pos_encoding[:, 1, 0:10]", self.lrn_model.router_model.trans_router.pos_encoding[:, 1, 0:10])
                 
                 #print("cls token grad", self.lrn_model.router_model.trans_router.cls_token.grad.min().item(), self.lrn_model.router_model.trans_router.cls_token.grad.max().item())
                 print("actor_out1 grad", self.lrn_model.router_model.trans_router.actor_out1.weight.grad.min().item(), self.lrn_model.router_model.trans_router.actor_out1.weight.grad.max().item())

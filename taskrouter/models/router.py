@@ -24,17 +24,16 @@ class TransformerRouter(nn.Module):
             self.pos_encoding = nn.Embedding(2 + self.config.routing_depth, self.args.emb_size)
         
         self.encoder = TransformerEncoder(self.args)
-        #self.cls_token = nn.Parameter(torch.randn(1, 1, self.args.emb_size))
+
         self.layer_norm = nn.LayerNorm(self.args.emb_size)
         self.dropout = nn.Dropout(self.args.drop_rate)
         self.inp_act = nn.Tanh()
+
         # Maps each embedding to distr value
         if self.args.vit:
             self.actor_out1 = nn.Linear(self.args.emb_size, self.config.num_modules, bias=False)
         else:
             self.actor_out1 = nn.Linear(self.args.emb_size, self.config.num_modules, bias=False)
-            # self.actor_act = nn.GELU()
-            # self.actor_out2 = nn.Linear(self.args.emb_size, self.config.num_modules)
 
 
     def forward(self, state, action_mask=None):
@@ -46,8 +45,8 @@ class TransformerRouter(nn.Module):
         enc_output = self.encoder(state_pos)
 
         # Get the class prediction
-        latent_out = enc_output[:, -1]#(enc_output).mean(dim=1)
-        mb_logits = self.actor_out1(self.layer_norm(latent_out))
+        latent_out = enc_output.mean(dim=1)
+        mb_logits = self.actor_out1(latent_out)
 
         # Apply masks over invalid actions
         if action_mask is not None:
@@ -62,8 +61,8 @@ class Router(nn.Module):
         self.args = args
         self.config = config
         
-        #self.trans_router = StableTransformer(self.args, self.config)
-        self.trans_router = TransformerRouter(self.args, self.config)
+        self.trans_router = StableTransformer(self.args, self.config)
+        #self.trans_router = TransformerRouter(self.args, self.config)
         self.mb_embs = nn.Embedding(self.config.num_modules, self.args.emb_size)
 
         self.task_embs = nn.Embedding(self.config.num_tasks, self.args.emb_size)

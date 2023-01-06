@@ -74,8 +74,7 @@ class StableTransformer(nn.Module):
         self.args = args
         self.config = config
         #self.pos_encoding = nn.Embedding()
-        self.pos_encoding = nn.Parameter(
-            torch.randn(1, 2 + self.config.routing_depth, self.args.emb_size))
+        self.pos_encoding = nn.Embedding(2 + self.config.routing_depth, self.args.emb_size)
         self.encoder = nn.Sequential(
             *[StableTransformerLayer(self.args) for _ in range(self.args.num_enc_layers)])
 
@@ -92,21 +91,9 @@ class StableTransformer(nn.Module):
             #module.weight.data.normal_(mean=0.0, std=0.02)
 
     def forward(self, state, action_mask=None, mask=None):
-        # state = torch.tanh(state)
-        
-
-        # print("IMG STATS", state[:, 0].min(), state[:, 0].max(), state[:, 0].mean())
-        # print("TASK EMB STATS", state[:, 1].min(), state[:, 1].max(), state[:, 1].mean())
-
-        # print("POS EMB STATS", self.pos_encoding.min(), self.pos_encoding.max(), self.pos_encoding.mean())
-        # print("self.pos_encoding[:, 1, 0:10]", self.pos_encoding[:, 1, 0:10])
         # Add position encoding to state
-        state_pos = torch.tanh(state + self.pos_encoding[:, :state.shape[1]])
-        # state_pos = state + self.pos_encoding[:, :state.shape[1]] * 0.0001
-
- 
-
-
+        pos = torch.arange(0, state.shape[1], dtype=torch.long, device=state.device).unsqueeze(0)
+        state_pos = torch.tanh(state + pos)
 
         # Get the MB logits
         enc_output = self.encoder(state_pos)

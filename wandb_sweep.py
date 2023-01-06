@@ -34,7 +34,7 @@ class HyperparameterTuner:
         self.args.min_temperature = wandb.config.min_temperature
         self.args.temp_decay_steps = int(wandb.config.temp_decay_steps)
         self.args.batch_size = wandb.config.batch_size
-        self.args.temperatue = wandb.config.temperatue
+        self.args.temperature = wandb.config.temperature
         trainer = Trainer(self.args, self.config, self.train_dataset, self.val_dataset, self.test_dataset)
         epochs = wandb.config.epochs
         
@@ -63,7 +63,7 @@ class HyperparameterTuner:
                 'min_temperature': {'max': 1.0, 'min': 0.001},
                 'temp_decay_steps': {'max': 100000, 'min': 10000},
                 'batch_size': {'values': [32, 64, 128]},
-                'temperatue': {'max': 20.0, 'min': 5.0}
+                'temperature': {'max': 20.0, 'min': 5.0}
             }
         }
 
